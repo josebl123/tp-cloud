@@ -1,0 +1,11 @@
+q:
+  notifications:
+    email:
+      enabled: true
+  seed:
+    enabled: true
+
+logging:
+  level:
+    ar.edu.itba.cloud.queue: DEBUG
+    org.hibernate.SQL: DEBUG

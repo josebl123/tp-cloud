@@ -1,0 +1,27 @@
+# Java / Maven
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# IDE
+.idea/
+*.iml
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+
+# Node / Next (frontend, later)
+node_modules/
+.next/
+out/
+.env*.local
+
+# Local config
+backend/src/main/resources/application-local.yml

@@ -1,0 +1,71 @@
+spring:
+  application:
+    name: queue-api
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:55432/qdb}
+    username: ${DB_USER:q}
+    password: ${DB_PASSWORD:q}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+      hibernate.query.in_clause_parameter_padding: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  mail:
+    host: ${MAIL_HOST:localhost}
+    port: ${MAIL_PORT:1025}
+  jackson:
+    default-property-inclusion: non_null
+  threads:
+    virtual:
+      enabled: true
+
+server:
+  port: ${PORT:8080}
+  error:
+    include-message: never
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
+logging:
+  level:
+    ar.edu.itba.cloud.queue: INFO
+
+q:
+  # Base URL of the SPA. QR codes and ticket links point here.
+  public-base-url: ${PUBLIC_BASE_URL:http://localhost:3000}
+  cors-allowed-origins: ${CORS_ORIGINS:http://localhost:3000}
+  jwt:
+    # Override in every non-local environment. Must be at least 32 bytes for HS256.
+    secret: ${JWT_SECRET:dev-only-secret-change-me-0123456789abcdef}
+    issuer: q-api
+    ttl: 12h
+  estimation:
+    # Number of most recent completed services averaged into the ETA.
+    service-time-samples: 10
+  grace:
+    sweep-interval: 10s
+  sse:
+    timeout: 30m
+    heartbeat-interval: 20s
+  notifications:
+    email:
+      enabled: ${NOTIFY_EMAIL_ENABLED:false}
+      from: ${NOTIFY_EMAIL_FROM:no-reply@q.local}

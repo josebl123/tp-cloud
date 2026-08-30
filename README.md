@@ -1,0 +1,140 @@
+# Q (Queue)
+
+Cloud queue-management platform for restaurants, shops and any other counter where people wait.
+A customer scans a QR code, joins the line with minimal data, and follows their turn from their own
+phone instead of standing in it. Staff run the line from a panel.
+
+ITBA 82.08 Cloud Computing - TP, Grupo 9. This repository implements the MVP of *Funcionalidades 1-5*
+of the "Queue" proposal.
+
+**Status: backend complete and tested. Frontend (Next.js SPA) not started yet.**
+
+## MVP coverage
+
+| Proposal | Where it lives |
+|---|---|
+| **1. Acceso e ingreso mediante QR** | `GET /public/queues/{id}/qr` renders the code; `POST /public/queues/{id}/entries` joins with a name plus one contact channel. |
+| **2. Seguimiento de la espera** | `GET /public/tickets/{token}` and its SSE stream: position, people ahead, estimated wait, recomputed on every movement. |
+| **3. Notificaciones del turno** | Configurable proximity thresholds (by position and by minutes), the "it's your turn" alert, and an audited notification history. |
+| **4. Gestion de la fila por el comercio** | Staff board, call / serve / no-show / cancel, pause and resume, and queue + establishment metrics. |
+| **5. Abandono y periodo de gracia** | `DELETE /public/tickets/{token}` frees the place; a configurable grace period plus four no-show policies decide what happens to someone who does not show up. |
+
+## Stack
+
+Java 25 (LTS) · Spring Boot 3.5 · Spring Security (JWT) · Spring Data JPA · PostgreSQL 16 ·
+Flyway · springdoc/OpenAPI · Testcontainers.
+
+## Layout
+
+```
+backend/          Spring Boot REST API
+  src/main/java/ar/edu/itba/cloud/queue/
+    persistence/  entities + repositories   - the only layer that knows about the database
+    service/      business rules            - the only layer that touches entities
+    controller/   HTTP                      - translates requests into service calls
+    security/     JWT issuing and resolution
+    realtime/     Server-Sent Events fan-out
+    config/       properties, security, OpenAPI, clock
+    exception/    RFC 7807 problem responses
+docs/             domain model and API reference
+docker-compose.yml  PostgreSQL + Mailpit for local development
+```
+
+The layering is strict in both directions: JPA entities never leave the service layer, and the
+service layer never sees an HTTP type. Requests are mapped into `service.command` records;
+responses are the immutable read models in `service.model`.
+
+## Running it
+
+```bash
+docker compose up -d
+```
+
+```bash
+cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=dev
+```
+
+* API - <http://localhost:8080/api/v1>
+* Swagger UI - <http://localhost:8080/swagger-ui.html>
+* Mailpit (catches every notification email) - <http://localhost:8025>
+
+> PostgreSQL is published on **55432**, not 5432, so it does not collide with a locally installed
+> PostgreSQL. Change it in `docker-compose.yml` and `DB_URL` if you prefer.
+
+The `dev` profile seeds a demo establishment with two queues and three customers waiting:
+
+| Account | Password | Role |
+|---|---|---|
+| `owner@demo.q` | `demo1234` | OWNER |
+| `staff@demo.q` | `demo1234` | STAFF |
+
+### Try it end to end
+
+```bash
+TOKEN=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' -d '{"email":"owner@demo.q","password":"demo1234"}' | python3 -c 'import sys,json;print(json.load(sys.stdin)["accessToken"])')
+```
+
+```bash
+curl -s localhost:8080/api/v1/establishments -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+## Tests
+
+```bash
+cd backend && mvn test
+```
+
+58 tests: unit tests for the estimation and ordering logic, plus integration tests that run the
+whole API against a real PostgreSQL through Testcontainers (Docker must be running). The tests drive
+a controllable clock, so grace periods and token expiry are asserted directly rather than by
+sleeping.
+
+## Configuration
+
+Everything is overridable by environment variable; defaults suit local development.
+
+| Property | Env | Default | Purpose |
+|---|---|---|---|
+| `q.public-base-url` | `PUBLIC_BASE_URL` | `http://localhost:3000` | SPA base. QR codes and ticket links are built on it. |
+| `q.cors-allowed-origins` | `CORS_ORIGINS` | `http://localhost:3000` | |
+| `q.jwt.secret` | `JWT_SECRET` | dev value | **Must be overridden outside local dev.** Minimum 32 bytes. |
+| `q.jwt.ttl` | | `12h` | Access-token lifetime. |
+| `q.estimation.service-time-samples` | | `10` | Recent services averaged into the ETA. |
+| `q.grace.sweep-interval` | | `10s` | How often expired grace periods are swept. |
+| `q.sse.timeout` / `q.sse.heartbeat-interval` | | `30m` / `20s` | |
+| `q.notifications.email.enabled` | `NOTIFY_EMAIL_ENABLED` | `false` (`true` in `dev`) | When off, notifications go to the logging transport. |
+| `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:55432/qdb` | |
+
+## Design notes worth knowing
+
+* **Positions are derived, never stored.** The `WAITING` list sorted by a sparse order key *is* the
+  line, so a shown position can never disagree with reality.
+* **One lock per queue.** Every mutation takes a pessimistic write lock on the queue row, which is
+  what stops two staff members from calling the same person.
+* **Notifications are sent after commit** and de-duplicated by `(entry, type, pass through the
+  line)`, so a threshold alert fires once per pass however much the queue moves.
+* **Grace expiry is evaluated both lazily and by a background sweep**, so state is never stale on
+  read and a queue nobody is watching still moves.
+* **One clock.** Time is read through an injected `Clock` everywhere, including JWT validation.
+
+See [docs/domain-model.md](docs/domain-model.md) for the state machine and the rules, and
+[docs/api-reference.md](docs/api-reference.md) for the endpoints.
+
+## Toward the cloud deployment
+
+The application is stateless apart from one thing, and that one thing is documented in
+`realtime/SseHub`: SSE emitters live in the JVM holding the connection. Running more than one
+replica means fanning `QueueChangedEvent` out through a shared broker (Redis pub/sub, SNS, a managed
+WebSocket API) and having each instance push to its local emitters.
+
+Two other seams were left deliberately swappable:
+
+* `NotificationSender` - today SMTP and a logger; SES/SNS/a WhatsApp provider drop in behind it
+  without touching any business logic.
+* `GraceSweepJob` - correct today under multiple replicas because of the per-queue lock, but a
+  leader election or a scheduled cloud trigger would avoid the duplicated work.
+
+## Next
+
+The Next.js SPA: the customer view (`/q/{queueId}`, `/t/{ticketToken}`) and the staff panel, both
+fed by the SSE streams.

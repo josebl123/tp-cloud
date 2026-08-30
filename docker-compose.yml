@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: q-postgres
+    environment:
+      POSTGRES_DB: qdb
+      POSTGRES_USER: q
+      POSTGRES_PASSWORD: q
+    ports:
+      # 5432 is commonly taken by a locally installed PostgreSQL, so the project uses its own port.
+      - "55432:5432"
+    volumes:
+      - q-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U q -d qdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: q-mailpit
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+volumes:
+  q-pgdata:
