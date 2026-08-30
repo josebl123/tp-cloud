@@ -25,3 +25,6 @@ out/
 
 # Local config
 backend/src/main/resources/application-local.yml
+
+# Local tooling
+.claude/

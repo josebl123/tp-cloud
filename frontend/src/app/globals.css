@@ -1,0 +1,168 @@
+@import "tailwindcss";
+
+/*
+ * Q design system - "warm hospitality".
+ *
+ * The customer holds this on a phone, often outdoors, often for one glance: how many are ahead of
+ * me, and how long. So the palette is warm and low-glare rather than clinical, and the one number
+ * that matters is set enormous in the display face while everything else recedes.
+ *
+ * Every colour is a semantic token, never a raw hex in a component. Dark mode re-points the same
+ * tokens, so a component written once is correct in both themes.
+ */
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
+
+  /* Surfaces and text */
+  --color-bg: #fdfbf7;
+  --color-surface: #ffffff;
+  --color-raised: #f7f1e8;
+  --color-ink: #2b211c;
+  --color-muted: #7c6f67;
+  --color-faint: #a2958c;
+  --color-line: #ebe1d6;
+  --color-line-strong: #ddcfc0;
+
+  /* Terracotta carries every primary action and the customer's own position. */
+  --color-brand: #c2643b;
+  --color-brand-hover: #ab5531;
+  --color-brand-soft: #f8e8de;
+  --color-on-brand: #fffaf6;
+
+  /* Sage means "settled": served, open, healthy. */
+  --color-sage: #5f7657;
+  --color-sage-soft: #e6ece1;
+
+  --color-warn: #9a6b12;
+  --color-warn-soft: #fbeed5;
+  --color-danger: #a83f34;
+  --color-danger-soft: #f9e2de;
+
+  --radius-lg: 1rem;
+  --radius-xl: 1.375rem;
+
+  --shadow-soft: 0 1px 2px rgb(43 33 28 / 0.04), 0 8px 24px -12px rgb(43 33 28 / 0.12);
+  --shadow-lift: 0 2px 4px rgb(43 33 28 / 0.05), 0 18px 40px -18px rgb(43 33 28 / 0.22);
+}
+
+/* Same tokens, re-pointed. Warm dark, not blue-black: it should still feel like the same product. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #14100d;
+    --color-surface: #241c17;
+    --color-raised: #302620;
+    --color-ink: #f4ece3;
+    --color-muted: #ac9c90;
+    --color-faint: #8a7a6e;
+    --color-line: #3a2e26;
+    --color-line-strong: #4f3f35;
+
+    --color-brand: #e08055;
+    --color-brand-hover: #ee9067;
+    --color-brand-soft: #3a2419;
+    --color-on-brand: #1a1009;
+
+    --color-sage: #9bb08f;
+    --color-sage-soft: #242c20;
+
+    --color-warn: #d9a441;
+    --color-warn-soft: #33260f;
+    --color-danger: #e08076;
+    --color-danger-soft: #38201c;
+
+    --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.6);
+    --shadow-lift: 0 2px 4px rgb(0 0 0 / 0.4), 0 18px 40px -18px rgb(0 0 0 / 0.7);
+  }
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* The whole product is about numbers changing; keep columns from jittering. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--color-brand-soft);
+    color: var(--color-ink);
+  }
+}
+
+@layer utilities {
+  /* The position readout. Optical sizing is why Fraunces is here rather than a second sans. */
+  .display-number {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 0.85;
+    letter-spacing: -0.03em;
+  }
+
+  .animate-in {
+    animation: fade-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .pulse-live {
+    animation: pulse-live 2s ease-in-out infinite;
+  }
+
+  @keyframes fade-rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  @keyframes pulse-live {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .animate-in,
+    .pulse-live {
+      animation: none;
+    }
+  }
+}
+
+/* The QR sheet is meant to be printed and taped to a counter. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+}

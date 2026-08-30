@@ -7,7 +7,7 @@ phone instead of standing in it. Staff run the line from a panel.
 ITBA 82.08 Cloud Computing - TP, Grupo 9. This repository implements the MVP of *Funcionalidades 1-5*
 of the "Queue" proposal.
 
-**Status: backend complete and tested. Frontend (Next.js SPA) not started yet.**
+**Status: backend and frontend both complete.** The SPA talks to the API over REST and Server-Sent Events.
 
 ## MVP coverage
 
@@ -21,8 +21,12 @@ of the "Queue" proposal.
 
 ## Stack
 
-Java 25 (LTS) · Spring Boot 3.5 · Spring Security (JWT) · Spring Data JPA · PostgreSQL 16 ·
-Flyway · springdoc/OpenAPI · Testcontainers.
+**Backend** — Java 25 (LTS) · Spring Boot 3.5 · Spring Security (JWT) · Spring Data JPA ·
+PostgreSQL 16 · Flyway · springdoc/OpenAPI · Testcontainers.
+
+**Frontend** — Next.js 16 (App Router, static export) · React 19 · TypeScript · Tailwind CSS 4.
+No component library and no data-fetching library: the API client, the live-resource hook and the
+design system are all first-party and small.
 
 ## Layout
 
@@ -36,9 +40,29 @@ backend/          Spring Boot REST API
     realtime/     Server-Sent Events fan-out
     config/       properties, security, OpenAPI, clock
     exception/    RFC 7807 problem responses
-docs/             domain model and API reference
+frontend/         Next.js SPA, exported as static files
+  src/app/        routes (see below)
+  src/components/ design-system primitives
+  src/lib/        API client, auth, live-resource hook, formatters
+docs/             domain model, API reference, frontend notes
 docker-compose.yml  PostgreSQL + Mailpit for local development
 ```
+
+### Routes
+
+| Route | Who | What |
+|---|---|---|
+| `/q/{queueId}` | customer | What the QR opens: the queue's live state, then the join form. |
+| `/t/{ticketToken}` | customer | Their own place in line, pushed live. |
+| `/` `/login` `/register` | staff | Landing and sign-in. |
+| `/panel` | staff | Today's numbers and every queue at a glance. |
+| `/panel/queue?id=` | staff | The live board: call, serve, no-show, pause, close. |
+| `/panel/queue/settings?id=` | owner | Waits, grace period, no-show policy, notification thresholds. |
+| `/panel/queue/qr?id=` | staff | The QR sheet, laid out for printing. |
+
+The two customer URLs stay clean because they get printed on a poster and sent in a message.
+Staff URLs carry their ids in the query string, which keeps the hosting configuration to two rules
+(see Deploying below).
 
 The layering is strict in both directions: JPA entities never leave the service layer, and the
 service layer never sees an HTTP type. Requests are mapped into `service.command` records;
@@ -54,6 +78,11 @@ docker compose up -d
 cd backend && mvn spring-boot:run -Dspring-boot.run.profiles=dev
 ```
 
+```bash
+cd frontend && npm install && npm run dev
+```
+
+* App - <http://localhost:3000>
 * API - <http://localhost:8080/api/v1>
 * Swagger UI - <http://localhost:8080/swagger-ui.html>
 * Mailpit (catches every notification email) - <http://localhost:8025>
@@ -134,7 +163,23 @@ Two other seams were left deliberately swappable:
 * `GraceSweepJob` - correct today under multiple replicas because of the per-queue lock, but a
   leader election or a scheduled cloud trigger would avoid the duplicated work.
 
+## Deploying the frontend
+
+`npm run build` writes `out/` — plain static files, no server, no idle compute. Upload it to S3
+behind CloudFront (or Amplify, or any static host) and add **two rewrites**, because the two public
+URLs carry an id the export cannot know in advance:
+
+| Request | Serves |
+|---|---|
+| `/q/*` | `/q/index.html` |
+| `/t/*` | `/t/index.html` |
+
+Each shell reads its id from the address bar at runtime. `next dev` gets the same behaviour through
+the rewrites in `next.config.ts`, so development and production agree.
+
+Set `NEXT_PUBLIC_API_URL` at build time, and point the backend's `PUBLIC_BASE_URL` at the deployed
+SPA so QR codes and ticket links resolve.
+
 ## Next
 
-The Next.js SPA: the customer view (`/q/{queueId}`, `/t/{ticketToken}`) and the staff panel, both
-fed by the SSE streams.
+Deployment itself: the S3/CloudFront distribution for the SPA, and a container for the API.

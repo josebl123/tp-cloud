@@ -65,19 +65,19 @@ public class NotificationService {
     public void ticketCreated(QueueEntry entry, int position, Integer estimatedWaitMinutes) {
         ServiceQueue queue = entry.getQueue();
         String eta = estimatedWaitMinutes == null || estimatedWaitMinutes <= 0
-                ? "en breve"
-                : "en aproximadamente %d minutos".formatted(estimatedWaitMinutes);
+                ? "any moment now"
+                : "about %d minutes".formatted(estimatedWaitMinutes);
 
         enqueue(entry, NotificationType.TICKET_CREATED,
-                "Estas en la fila de %s".formatted(queue.getName()),
+                "You're in the queue for %s".formatted(queue.getName()),
                 """
-                Hola %s, ya tenes tu lugar en la fila "%s" de %s.
+                Hi %s, you have a place in the "%s" queue at %s.
 
-                Numero de turno: %d
-                Posicion actual: %d
-                Tiempo estimado: %s
+                Ticket number: %d
+                Current position: %d
+                Estimated wait: %s
 
-                Segui tu turno en tiempo real y avisanos si te vas:
+                Follow your turn live, and let us know if you leave:
                 %s
                 """.formatted(entry.getCustomerName(), queue.getName(),
                         queue.getEstablishment().getName(), entry.getTicketNumber(), position, eta,
@@ -88,14 +88,14 @@ public class NotificationService {
     public void yourTurn(QueueEntry entry) {
         ServiceQueue queue = entry.getQueue();
         String graceLine = queue.getGracePeriodSeconds() > 0
-                ? "Tenes %d minutos para presentarte antes de perder tu lugar.".formatted(
+                ? "You have %d minutes to come over before you lose your place.".formatted(
                         Math.max(1, queue.getGracePeriodSeconds() / 60))
-                : "Te esperamos.";
+                : "We're waiting for you.";
 
         enqueue(entry, NotificationType.YOUR_TURN,
-                "Es tu turno en %s".formatted(queue.getName()),
+                "It's your turn at %s".formatted(queue.getName()),
                 """
-                Hola %s, es tu turno (numero %d) en "%s" de %s.
+                Hi %s, it's your turn (ticket %d) in "%s" at %s.
 
                 %s
 
@@ -109,17 +109,17 @@ public class NotificationService {
     public void noShow(QueueEntry entry, NoShowPolicy policy, Integer newPosition) {
         ServiceQueue queue = entry.getQueue();
         String outcome = switch (policy) {
-            case REMOVE -> "Lamentablemente perdiste tu lugar en la fila.";
-            case MOVE_TO_END -> "Te reubicamos al final de la fila.";
-            case MOVE_BACK -> "Te reubicamos %d lugares mas atras.".formatted(queue.getMoveBackPositions());
-            case KEEP_POSITION -> "Conservaste tu lugar en la fila.";
+            case REMOVE -> "Unfortunately you have lost your place in the queue.";
+            case MOVE_TO_END -> "We have moved you to the end of the queue.";
+            case MOVE_BACK -> "We have moved you %d places further back.".formatted(queue.getMoveBackPositions());
+            case KEEP_POSITION -> "You have kept your place in the queue.";
         };
-        String positionLine = newPosition == null ? "" : "%nTu nueva posicion es %d.".formatted(newPosition);
+        String positionLine = newPosition == null ? "" : "%nYour new position is %d.".formatted(newPosition);
 
         enqueue(entry, NotificationType.NO_SHOW,
-                "No pudimos atenderte en %s".formatted(queue.getName()),
+                "We could not serve you at %s".formatted(queue.getName()),
                 """
-                Hola %s, se cumplio el tiempo de espera para presentarte en "%s".
+                Hi %s, the time to come over for "%s" ran out.
 
                 %s%s
 
@@ -132,11 +132,11 @@ public class NotificationService {
     public void queueClosed(QueueEntry entry) {
         ServiceQueue queue = entry.getQueue();
         enqueue(entry, NotificationType.QUEUE_CLOSED,
-                "Se cerro la fila de %s".formatted(queue.getName()),
+                "The %s queue has closed".formatted(queue.getName()),
                 """
-                Hola %s, la fila "%s" de %s fue cerrada y tu lugar ya no esta activo.
+                Hi %s, the "%s" queue at %s has closed and your place is no longer active.
 
-                Disculpa las molestias.
+                Sorry for the inconvenience.
                 """.formatted(entry.getCustomerName(), queue.getName(),
                         queue.getEstablishment().getName()));
     }
@@ -163,11 +163,11 @@ public class NotificationService {
 
             if (positionThreshold != null && peopleAhead <= positionThreshold) {
                 enqueue(entry, NotificationType.APPROACHING_POSITION,
-                        "Se acerca tu turno en %s".formatted(queue.getName()),
+                        "Your turn at %s is coming up".formatted(queue.getName()),
                         """
-                        Hola %s, quedan %d persona(s) antes que vos en "%s" de %s.
+                        Hi %s, there are %d person(s) ahead of you in "%s" at %s.
 
-                        Tiempo estimado: %d minuto(s).
+                        Estimated wait: %d minute(s).
                         %s
                         """.formatted(entry.getCustomerName(), peopleAhead, queue.getName(),
                                 queue.getEstablishment().getName(), estimatedMinutes,
@@ -176,11 +176,11 @@ public class NotificationService {
 
             if (minutesThreshold != null && estimatedMinutes <= minutesThreshold) {
                 enqueue(entry, NotificationType.APPROACHING_TIME,
-                        "Faltan unos %d minutos para tu turno".formatted(estimatedMinutes),
+                        "About %d minutes until your turn".formatted(estimatedMinutes),
                         """
-                        Hola %s, tu turno en "%s" de %s seria en aproximadamente %d minuto(s).
+                        Hi %s, your turn in "%s" at %s should come in about %d minute(s).
 
-                        Posicion actual: %d.
+                        Current position: %d.
                         %s
                         """.formatted(entry.getCustomerName(), queue.getName(),
                                 queue.getEstablishment().getName(), estimatedMinutes, peopleAhead + 1,

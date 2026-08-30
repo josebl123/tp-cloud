@@ -59,19 +59,19 @@ public class DevDataSeeder implements ApplicationRunner {
         }
 
         AuthResult owner = authService.register(new RegisterCommand(
-                OWNER_EMAIL, PASSWORD, "Duenio Demo", "Parrilla La Espera", "America/Argentina/Buenos_Aires"));
+                OWNER_EMAIL, PASSWORD, "Demo Owner", "Parrilla La Espera", "America/Argentina/Buenos_Aires"));
         UUID ownerId = owner.user().id();
         UUID establishmentId = owner.establishment().id();
 
         establishmentService.addMember(ownerId, establishmentId,
-                new AddMemberCommand(STAFF_EMAIL, PASSWORD, "Empleado Demo", MembershipRole.STAFF));
+                new AddMemberCommand(STAFF_EMAIL, PASSWORD, "Demo Staff", MembershipRole.STAFF));
 
         QueueView tables = queueService.create(ownerId, establishmentId, new CreateQueueCommand(
-                "Mesas", "Fila principal del salon", 3, 25, null, 120,
+                "Tables", "Main dining room queue", 3, 25, null, 120,
                 NoShowPolicy.MOVE_BACK, 2, 3, 10, true));
 
         queueService.create(ownerId, establishmentId, new CreateQueueCommand(
-                "Take away", "Retiro de pedidos por mostrador", 1, 5, 20, 60,
+                "Take away", "Counter pickup for online orders", 1, 5, 20, 60,
                 NoShowPolicy.MOVE_TO_END, 3, 2, 5, false));
 
         entryService.join(tables.id(), new JoinCommand("Ana Perez", "ana@demo.q", null, 2));
