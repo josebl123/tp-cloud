@@ -44,7 +44,7 @@ frontend/         Next.js SPA, exported as static files
   src/app/        routes (see below)
   src/components/ design-system primitives
   src/lib/        API client, auth, live-resource hook, formatters
-docs/             domain model, API reference, frontend notes
+docs/             architecture, domain model, API reference, frontend notes
 docker-compose.yml  PostgreSQL + Mailpit for local development
 ```
 
@@ -146,8 +146,14 @@ Everything is overridable by environment variable; defaults suit local developme
   read and a queue nobody is watching still moves.
 * **One clock.** Time is read through an injected `Clock` everywhere, including JWT validation.
 
-See [docs/domain-model.md](docs/domain-model.md) for the state machine and the rules, and
-[docs/api-reference.md](docs/api-reference.md) for the endpoints.
+## Documentation
+
+| Document | Covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | **Start here.** System architecture, request lifecycles, the concurrency and ordering models, security, cloud deployment, and a decision log with the alternatives that were rejected |
+| [docs/domain-model.md](docs/domain-model.md) | Entities, the entry state machine, grace policies, estimation and metrics definitions |
+| [docs/api-reference.md](docs/api-reference.md) | Every endpoint, error code and payload, plus the SSE contract |
+| [docs/frontend.md](docs/frontend.md) | Frontend implementation notes and the design language |
 
 ## Toward the cloud deployment
 
