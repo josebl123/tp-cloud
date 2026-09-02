@@ -51,8 +51,10 @@ public class QueueEntryService {
     private final GraceService graceService;
     private final QueueViewFactory viewFactory;
     private final AccessGuard accessGuard;
+    private final QueueLaneService laneService;
     private final ApplicationEventPublisher publisher;
     private final Clock clock;
+    private final QueueEntrySelector selector;
 
     public QueueEntryService(ServiceQueueRepository queueRepository,
                              QueueEntryRepository entryRepository,
@@ -63,8 +65,9 @@ public class QueueEntryService {
                              GraceService graceService,
                              QueueViewFactory viewFactory,
                              AccessGuard accessGuard,
+                             QueueLaneService laneService,
                              ApplicationEventPublisher publisher,
-                             Clock clock) {
+                             Clock clock, QueueEntrySelector selector) {
         this.queueRepository = queueRepository;
         this.entryRepository = entryRepository;
         this.ordering = ordering;
@@ -74,8 +77,10 @@ public class QueueEntryService {
         this.graceService = graceService;
         this.viewFactory = viewFactory;
         this.accessGuard = accessGuard;
+        this.laneService = laneService;
         this.publisher = publisher;
         this.clock = clock;
+        this.selector = selector;
     }
 
     // ---------------------------------------------------------------- customer
@@ -98,17 +103,21 @@ public class QueueEntryService {
                     "This queue is %s and is not taking new customers".formatted(
                             queue.getStatus().name().toLowerCase(Locale.ROOT)));
         }
-        if (queue.isRequirePartySize() && command.partySize() == null) {
+        if (command.partySize() == null) {
             throw new ValidationException("PARTY_SIZE_REQUIRED", "This queue requires the size of your party");
         }
 
+        int partySize = command.partySize();
+        var lane = laneService.select(queue, partySize);
+        laneService.ensureCapacity(lane, partySize);
+
         long active = entryRepository.countByQueueIdAndStatusIn(queueId, EntryStatus.active());
-        if (queue.getMaxSize() != null && active >= queue.getMaxSize()) {
+        if (queue.getMaxSize() != null && active + 1 > queue.getMaxSize()) {
             throw new ConflictException("QUEUE_FULL", "This queue has reached its maximum size");
         }
 
-        QueueEntry entry = new QueueEntry(queue, UUID.randomUUID(), queue.allocateTicketNumber(),
-                ordering.keyForEnd(queue), name, email, phone, command.partySize(), clock.instant());
+        QueueEntry entry = new QueueEntry(queue, lane, UUID.randomUUID(), queue.allocateTicketNumber(),
+                ordering.keyForEnd(queue), name, email, phone, partySize, clock.instant());
         entryRepository.save(entry);
         queueRepository.save(queue);
 
@@ -116,15 +125,14 @@ public class QueueEntryService {
                 "ticketNumber=%d".formatted(entry.getTicketNumber()));
 
         Context context = context(queue);
-        int peopleAhead = indexOf(context.waiting(), entry.getId());
-        int estimatedMinutes = EstimationService.toMinutes(
-                estimationService.estimateWait(queue, peopleAhead, context.inServiceCount(), context.averageService()));
+        EstimationService.Simulation simulation = estimationService.estimate(queue, context.waiting(), context.inService(), entry, context.averageService());
+        int estimatedMinutes = EstimationService.toMinutes(simulation.estimatedWait());
 
         // The message that carries the personal follow-up link, which is how customers get back in.
-        notificationService.ticketCreated(entry, peopleAhead + 1, estimatedMinutes);
+        notificationService.ticketCreated(entry, simulation);
 
         afterChange(queue, context);
-        return viewFactory.ticketView(entry, peopleAhead, context.inServiceCount(), context.averageService());
+        return viewFactory.ticketView(entry, simulation);
     }
 
     /** Functionality 5: the customer gives up their place, freeing the line for everyone behind. */
@@ -143,7 +151,7 @@ public class QueueEntryService {
 
         release(queue, entry, ActorType.CUSTOMER, null);
         Context context = afterChange(queue, null);
-        return viewFactory.ticketView(entry, null, context.inServiceCount(), context.averageService());
+        return viewFactory.ticketView(entry, null);
     }
 
     // ------------------------------------------------------------------- staff
@@ -161,10 +169,28 @@ public class QueueEntryService {
             throw new ConflictException("QUEUE_EMPTY", "There is nobody waiting in this queue");
         }
 
-        QueueEntry entry = waiting.getFirst();
+        QueueEntrySelector.Selection selected = selector.select(queue, waiting, queue.getRoundRobinPosition());
+        QueueEntry entry = selected.entry();
+        if (queue.getCallStrategy() == ar.edu.itba.cloud.queue.persistence.entity.CallStrategy.ROUND_ROBIN) {
+            queue.setRoundRobinPosition(selected.nextRoundRobinPosition());
+            queueRepository.save(queue);
+        }
         doCall(queue, entry, userId);
         Context context = afterChange(queue, null);
         return view(queue, entry, context);
+    }
+
+    @Transactional
+    public EntryView callNext(UUID userId, UUID queueId, UUID laneId) {
+        ServiceQueue queue = lockQueue(queueId);
+        accessGuard.requireMember(userId, queue.getEstablishment().getId());
+        graceService.expireDue(queue);
+        requireOperable(queue);
+        List<QueueEntry> waiting = entryRepository.findAllByQueueIdAndLaneIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queueId, laneId, EntryStatus.WAITING);
+        if (waiting.isEmpty()) throw new ConflictException("QUEUE_EMPTY", "There is nobody waiting in this lane");
+        QueueEntry entry = waiting.getFirst();
+        doCall(queue, entry, userId);
+        return view(queue, entry, afterChange(queue, null));
     }
 
     /** Calls one specific customer, which is how staff skip ahead when someone is not around. */
@@ -372,7 +398,7 @@ public class QueueEntryService {
      */
     private Context afterChange(ServiceQueue queue, Context precomputed) {
         Context context = precomputed != null ? precomputed : context(queue);
-        notificationService.evaluateThresholds(queue, context.waiting(), context.inServiceCount(),
+        notificationService.evaluateThresholds(queue, context.waiting(), context.inService(),
                 context.averageService());
         publisher.publishEvent(new QueueChangedEvent(queue.getId()));
         return context;
@@ -380,19 +406,15 @@ public class QueueEntryService {
 
     private Context context(ServiceQueue queue) {
         List<QueueEntry> waiting = waitingList(queue.getId());
-        int inService = (int) entryRepository.countByQueueIdAndStatusIn(queue.getId(),
+        List<QueueEntry> inService = entryRepository.findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(queue.getId(),
                 List.of(EntryStatus.CALLED, EntryStatus.SERVING));
         Duration average = estimationService.averageServiceTime(queue).duration();
         return new Context(waiting, inService, average);
     }
 
     private EntryView view(ServiceQueue queue, QueueEntry entry, Context context) {
-        Integer peopleAhead = null;
-        if (entry.getStatus() == EntryStatus.WAITING) {
-            int index = indexOf(context.waiting(), entry.getId());
-            peopleAhead = index >= 0 ? index : null;
-        }
-        return viewFactory.entryView(entry, peopleAhead, context.inServiceCount(), queue, context.averageService());
+        if (entry.getStatus() != EntryStatus.WAITING) return viewFactory.staticEntryView(entry, context.inServiceCount());
+        return viewFactory.entryView(entry, estimationService.estimate(queue, context.waiting(), context.inService(), entry, context.averageService()));
     }
 
     private List<QueueEntry> waitingList(UUID queueId) {
@@ -420,7 +442,7 @@ public class QueueEntryService {
     }
 
     private void requireOperable(ServiceQueue queue) {
-        if (queue.getStatus() == QueueStatus.CLOSED) {
+        if (queue.getStatus() == QueueStatus.CLOSED || queue.getArchivedAt() != null) {
             throw new ConflictException("QUEUE_CLOSED", "This queue is closed");
         }
     }
@@ -437,6 +459,18 @@ public class QueueEntryService {
         for (int index = 0; index < entries.size(); index++) {
             if (entries.get(index).getId().equals(entryId)) {
                 return index;
+            }
+        }
+        return -1;
+    }
+
+    private static int indexOfLane(List<QueueEntry> entries, UUID entryId, UUID laneId) {
+        int index = 0;
+        for (QueueEntry entry : entries) {
+            if (laneId == null || laneId.equals(entry.getLane() == null ? null : entry.getLane().getId())) {
+                if (entry.getId().equals(entryId)) return index;
+                // Position is always expressed in groups. Capacity mode only controls admission.
+                index++;
             }
         }
         return -1;
@@ -465,7 +499,8 @@ public class QueueEntryService {
     }
 
     /** The state of a queue at one instant, gathered once and reused across a request. */
-    private record Context(List<QueueEntry> waiting, int inServiceCount, Duration averageService) {
+    private record Context(List<QueueEntry> waiting, List<QueueEntry> inService, Duration averageService) {
+        int inServiceCount() { return inService.size(); }
     }
 
     private record Locked(ServiceQueue queue, QueueEntry entry) {

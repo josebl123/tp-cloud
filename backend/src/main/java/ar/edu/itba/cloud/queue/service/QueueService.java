@@ -1,6 +1,7 @@
 package ar.edu.itba.cloud.queue.service;
 
 import ar.edu.itba.cloud.queue.exception.NotFoundException;
+import ar.edu.itba.cloud.queue.exception.ConflictException;
 import ar.edu.itba.cloud.queue.exception.ValidationException;
 import ar.edu.itba.cloud.queue.persistence.entity.Establishment;
 import ar.edu.itba.cloud.queue.persistence.entity.EntryStatus;
@@ -16,6 +17,8 @@ import ar.edu.itba.cloud.queue.service.command.UpdateQueueCommand;
 import ar.edu.itba.cloud.queue.service.event.QueueChangedEvent;
 import ar.edu.itba.cloud.queue.service.model.PublicQueueView;
 import ar.edu.itba.cloud.queue.service.model.QueueEventView;
+import ar.edu.itba.cloud.queue.service.model.QueueAvailabilityView;
+import ar.edu.itba.cloud.queue.service.model.QueueLaneView;
 import ar.edu.itba.cloud.queue.service.model.QueueSnapshot;
 import ar.edu.itba.cloud.queue.service.model.QueueView;
 import ar.edu.itba.cloud.queue.persistence.entity.ActorType;
@@ -47,6 +50,8 @@ public class QueueService {
     private final EventRecorder eventRecorder;
     private final ApplicationEventPublisher publisher;
     private final Clock clock;
+    private final QueueLaneService laneService;
+    private final EstimationService estimationService;
 
     public QueueService(ServiceQueueRepository queueRepository,
                         QueueEntryRepository entryRepository,
@@ -57,7 +62,9 @@ public class QueueService {
                         AccessGuard accessGuard,
                         EventRecorder eventRecorder,
                         ApplicationEventPublisher publisher,
-                        Clock clock) {
+                        Clock clock,
+                        QueueLaneService laneService,
+                        EstimationService estimationService) {
         this.queueRepository = queueRepository;
         this.entryRepository = entryRepository;
         this.establishmentRepository = establishmentRepository;
@@ -68,6 +75,8 @@ public class QueueService {
         this.eventRecorder = eventRecorder;
         this.publisher = publisher;
         this.clock = clock;
+        this.laneService = laneService;
+        this.estimationService = estimationService;
     }
 
     @Transactional
@@ -80,6 +89,7 @@ public class QueueService {
         applyCreate(queue, command);
         validate(queue);
         queueRepository.save(queue);
+        laneService.defaultLane(queue, clock.instant());
 
         eventRecorder.record(queue.getId(), null, EventType.QUEUE_CREATED, ActorType.STAFF, userId,
                 "name=%s".formatted(queue.getName()));
@@ -89,7 +99,7 @@ public class QueueService {
     @Transactional(readOnly = true)
     public List<QueueView> listForEstablishment(UUID userId, UUID establishmentId) {
         accessGuard.requireMember(userId, establishmentId);
-        return queueRepository.findAllByEstablishmentIdOrderByNameAsc(establishmentId).stream()
+        return queueRepository.findAllByEstablishmentIdAndArchivedAtIsNullOrderByNameAsc(establishmentId).stream()
                 .map(viewFactory::queueView)
                 .toList();
     }
@@ -98,6 +108,7 @@ public class QueueService {
     public QueueView get(UUID userId, UUID queueId) {
         ServiceQueue queue = load(queueId);
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
         return viewFactory.queueView(queue);
     }
 
@@ -105,6 +116,7 @@ public class QueueService {
     public QueueView update(UUID userId, UUID queueId, UpdateQueueCommand command) {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireOwner(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) throw new ConflictException("QUEUE_ARCHIVED", "This queue is archived");
 
         applyUpdate(queue, command);
         validate(queue);
@@ -127,6 +139,7 @@ public class QueueService {
     public QueueView changeStatus(UUID userId, UUID queueId, QueueStatus status) {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) throw new ConflictException("QUEUE_ARCHIVED", "This queue is archived");
 
         QueueStatus previous = queue.getStatus();
         if (previous == status) {
@@ -153,9 +166,15 @@ public class QueueService {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireOwner(userId, queue.getEstablishment().getId());
 
-        eventRecorder.record(queueId, null, EventType.QUEUE_DELETED, ActorType.STAFF, userId,
+        graceService.expireDue(queue);
+        queue.setStatus(QueueStatus.CLOSED);
+        entryService.releaseAllActive(queue, userId);
+        queue.setArchivedAt(clock.instant());
+        queue.setUpdatedAt(clock.instant());
+        queueRepository.save(queue);
+        eventRecorder.record(queueId, null, EventType.QUEUE_ARCHIVED, ActorType.STAFF, userId,
                 "name=%s".formatted(queue.getName()));
-        queueRepository.delete(queue);
+        publisher.publishEvent(new QueueChangedEvent(queueId));
     }
 
     /** The staff board. Expires overdue grace periods first so it always reflects the current line. */
@@ -163,6 +182,7 @@ public class QueueService {
     public QueueSnapshot getSnapshot(UUID userId, UUID queueId) {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
         if (graceService.expireDue(queue)) {
             publisher.publishEvent(new QueueChangedEvent(queueId));
         }
@@ -179,6 +199,7 @@ public class QueueService {
     @Transactional
     public PublicQueueView publicView(UUID queueId) {
         ServiceQueue queue = lock(queueId);
+        if (queue.getArchivedAt() != null) throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
         if (graceService.expireDue(queue)) {
             publisher.publishEvent(new QueueChangedEvent(queueId));
         }
@@ -186,6 +207,49 @@ public class QueueService {
         int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId,
                 List.of(EntryStatus.CALLED, EntryStatus.SERVING));
         return viewFactory.publicView(queue, waiting, inService);
+    }
+
+    /** Quotes the exact group size a customer entered without reserving a place. */
+    @Transactional
+    public QueueAvailabilityView availability(UUID queueId, int partySize) {
+        if (partySize < 1) {
+            throw new ValidationException("INVALID_PARTY_SIZE", "partySize must be at least 1");
+        }
+        ServiceQueue queue = lock(queueId);
+        if (queue.getArchivedAt() != null) {
+            throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
+        }
+        graceService.expireDue(queue);
+        List<QueueEntry> waiting = entryRepository
+                .findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queueId, EntryStatus.WAITING);
+        long active = entryRepository.countByQueueIdAndStatusIn(queueId, EntryStatus.active());
+        try {
+            var lane = laneService.select(queue, partySize);
+            boolean queueFull = queue.getMaxSize() != null && active >= queue.getMaxSize();
+            boolean laneFull = !laneService.hasCapacity(lane, partySize);
+            List<QueueEntry> inService = entryRepository.findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(queueId,
+                    List.of(EntryStatus.CALLED, EntryStatus.SERVING));
+            QueueEntry candidate = new QueueEntry(queue, lane, UUID.randomUUID(), 0, Long.MAX_VALUE,
+                    "quote", null, null, partySize, java.time.Instant.EPOCH);
+            List<QueueEntry> simulatedWaiting = new java.util.ArrayList<>(waiting);
+            simulatedWaiting.add(candidate);
+            EstimationService.Simulation simulation = estimationService.estimate(queue, simulatedWaiting, inService,
+                    candidate, estimationService.averageServiceTime(queue).duration());
+            QueueLaneView laneView = new QueueLaneView(lane.getId(), lane.getName(), lane.getMinPartySize(),
+                    lane.getMaxPartySize(), lane.getPriority(), lane.getCapacityMode(), lane.getMaxSize(),
+                    lane.getTimeFactor(), lane.isActive());
+            boolean available = queue.acceptsNewEntries() && !queueFull && !laneFull;
+            return new QueueAvailabilityView(laneView, true, available, queueFull, laneFull,
+                    simulation.lanePosition(), simulation.laneGroupsAhead(), simulation.globalWaitingGroupsAhead(),
+                    simulation.groupsInService(), EstimationService.toMinutes(simulation.estimatedWait()));
+        } catch (ConflictException exception) {
+            if (!"NO_COMPATIBLE_LANE".equals(exception.getCode())) {
+                throw exception;
+            }
+            int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId,
+                    List.of(EntryStatus.CALLED, EntryStatus.SERVING));
+            return new QueueAvailabilityView(null, false, false, false, false, null, null, waiting.size(), inService, null);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -229,9 +293,7 @@ public class QueueService {
         }
         queue.setNotifyAtPosition(command.notifyAtPosition());
         queue.setNotifyAtMinutes(command.notifyAtMinutes());
-        if (command.requirePartySize() != null) {
-            queue.setRequirePartySize(command.requirePartySize());
-        }
+        if (command.callStrategy() != null) queue.setCallStrategy(command.callStrategy());
     }
 
     private void applyUpdate(ServiceQueue queue, UpdateQueueCommand command) {
@@ -271,9 +333,7 @@ public class QueueService {
         } else if (command.notifyAtMinutes() != null) {
             queue.setNotifyAtMinutes(command.notifyAtMinutes());
         }
-        if (command.requirePartySize() != null) {
-            queue.setRequirePartySize(command.requirePartySize());
-        }
+        if (command.callStrategy() != null) queue.setCallStrategy(command.callStrategy());
     }
 
     /** Mirrors the database check constraints, so a bad value fails as a 400 rather than a 500. */

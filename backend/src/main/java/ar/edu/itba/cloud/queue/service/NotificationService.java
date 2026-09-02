@@ -62,8 +62,9 @@ public class NotificationService {
     }
 
     /** Sent on join. This is the message that carries the personal follow-up link. */
-    public void ticketCreated(QueueEntry entry, int position, Integer estimatedWaitMinutes) {
+    public void ticketCreated(QueueEntry entry, EstimationService.Simulation simulation) {
         ServiceQueue queue = entry.getQueue();
+        Integer estimatedWaitMinutes = EstimationService.toMinutes(simulation.estimatedWait());
         String eta = estimatedWaitMinutes == null || estimatedWaitMinutes <= 0
                 ? "any moment now"
                 : "about %d minutes".formatted(estimatedWaitMinutes);
@@ -74,13 +75,16 @@ public class NotificationService {
                 Hi %s, you have a place in the "%s" queue at %s.
 
                 Ticket number: %d
-                Current position: %d
+                Groups scheduled before you: %d
+                Groups currently in service: %d
+                Place in your lane: %d
                 Estimated wait: %s
 
                 Follow your turn live, and let us know if you leave:
                 %s
                 """.formatted(entry.getCustomerName(), queue.getName(),
-                        queue.getEstablishment().getName(), entry.getTicketNumber(), position, eta,
+                        queue.getEstablishment().getName(), entry.getTicketNumber(), simulation.globalWaitingGroupsAhead(),
+                        simulation.groupsInService(), simulation.lanePosition(), eta,
                         properties.ticketUrl(entry.getTicketToken())));
     }
 
@@ -147,7 +151,7 @@ public class NotificationService {
      * @param waiting  the WAITING entries in service order
      * @param inService how many customers currently occupy a service station
      */
-    public void evaluateThresholds(ServiceQueue queue, List<QueueEntry> waiting, long inService,
+    public void evaluateThresholds(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService,
                                    Duration averageServiceTime) {
         Integer positionThreshold = queue.getNotifyAtPosition();
         Integer minutesThreshold = queue.getNotifyAtMinutes();
@@ -155,21 +159,20 @@ public class NotificationService {
             return;
         }
 
-        for (int index = 0; index < waiting.size(); index++) {
-            QueueEntry entry = waiting.get(index);
-            int peopleAhead = index;
-            int estimatedMinutes = EstimationService.toMinutes(
-                    estimationService.estimateWait(queue, peopleAhead, (int) inService, averageServiceTime));
+        for (QueueEntry entry : waiting) {
+            EstimationService.Simulation simulation = estimationService.estimate(queue, waiting, inService, entry, averageServiceTime);
+            int groupsAhead = simulation.globalWaitingGroupsAhead();
+            int estimatedMinutes = EstimationService.toMinutes(simulation.estimatedWait());
 
-            if (positionThreshold != null && peopleAhead <= positionThreshold) {
+            if (positionThreshold != null && groupsAhead <= positionThreshold) {
                 enqueue(entry, NotificationType.APPROACHING_POSITION,
                         "Your turn at %s is coming up".formatted(queue.getName()),
                         """
-                        Hi %s, there are %d person(s) ahead of you in "%s" at %s.
+                        Hi %s, there are %d group(s) scheduled before you in "%s" at %s.
 
                         Estimated wait: %d minute(s).
                         %s
-                        """.formatted(entry.getCustomerName(), peopleAhead, queue.getName(),
+                        """.formatted(entry.getCustomerName(), groupsAhead, queue.getName(),
                                 queue.getEstablishment().getName(), estimatedMinutes,
                                 properties.ticketUrl(entry.getTicketToken())));
             }
@@ -180,10 +183,12 @@ public class NotificationService {
                         """
                         Hi %s, your turn in "%s" at %s should come in about %d minute(s).
 
-                        Current position: %d.
+                        Groups scheduled before you: %d.
+                        Place in your lane: %d.
                         %s
                         """.formatted(entry.getCustomerName(), queue.getName(),
-                                queue.getEstablishment().getName(), estimatedMinutes, peopleAhead + 1,
+                                queue.getEstablishment().getName(), estimatedMinutes,
+                                simulation.globalWaitingGroupsAhead(), simulation.lanePosition(),
                                 properties.ticketUrl(entry.getTicketToken())));
             }
         }
@@ -210,7 +215,7 @@ public class NotificationService {
                 entry.getId(), type, entry.getNotificationCycle(), channel, destination,
                 clip(subject, MAX_SUBJECT), clip(body, MAX_BODY), clock.instant()));
 
-        eventRecorder.recordBySystem(entry.getQueue().getId(), entry.getId(), EventType.NOTIFICATION_SENT,
+        eventRecorder.recordBySystem(entry.getQueue().getId(), entry.getId(), EventType.NOTIFICATION_QUEUED,
                 "type=%s channel=%s".formatted(type, channel));
         publisher.publishEvent(new NotificationQueuedEvent(record.getId()));
     }
