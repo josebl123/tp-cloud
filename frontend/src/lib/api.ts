@@ -11,11 +11,14 @@ import type {
   MetricsView,
   NotificationView,
   PublicQueueView,
+  QueueAvailabilityView,
   QueueEventView,
   QueueSnapshot,
   QueueStatus,
   QueueView,
+  QueueLaneView,
   TicketView,
+  CallStrategy,
 } from './types'
 
 export const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080').replace(/\/$/, '')
@@ -144,11 +147,18 @@ export const api = {
       request<QueueView>(`/queues/${id}/status`, { method: 'PUT', body: { status } }),
     board: (id: string, signal?: AbortSignal) =>
       request<QueueSnapshot>(`/queues/${id}/board`, { signal }),
-    call: (id: string, entryId?: string) =>
-      request<EntryView>(`/queues/${id}/calls`, { method: 'POST', body: { entryId: entryId ?? null } }),
+    call: (id: string, entryId?: string, laneId?: string) =>
+      request<EntryView>(`/queues/${id}/calls`, { method: 'POST', body: { entryId: entryId ?? null, laneId: laneId ?? null } }),
     events: (id: string, limit = 40) => request<QueueEventView[]>(`/queues/${id}/events?limit=${limit}`),
     metrics: (id: string, range: MetricsRange) =>
       request<MetricsView>(`/queues/${id}/metrics?range=${range}`),
+    lanes: (id: string) => request<QueueLaneView[]>(`/queues/${id}/lanes`),
+    createLane: (id: string, body: Record<string, unknown>) =>
+      request<QueueLaneView>(`/queues/${id}/lanes`, { method: 'POST', body }),
+    updateLane: (queueId: string, laneId: string, body: Record<string, unknown>) =>
+      request<QueueLaneView>(`/queues/${queueId}/lanes/${laneId}`, { method: 'PATCH', body }),
+    removeLane: (queueId: string, laneId: string) =>
+      request<void>(`/queues/${queueId}/lanes/${laneId}`, { method: 'DELETE' }),
   },
 
   entries: {
@@ -160,6 +170,8 @@ export const api = {
   publicApi: {
     queue: (queueId: string, signal?: AbortSignal) =>
       request<PublicQueueView>(`/public/queues/${queueId}`, { auth: false, signal }),
+    availability: (queueId: string, partySize: number, signal?: AbortSignal) =>
+      request<QueueAvailabilityView>(`/public/queues/${queueId}/availability?partySize=${partySize}`, { auth: false, signal }),
     join: (queueId: string, body: JoinPayload) =>
       request<TicketView>(`/public/queues/${queueId}/entries`, { method: 'POST', body, auth: false }),
     ticket: (token: string, signal?: AbortSignal) =>

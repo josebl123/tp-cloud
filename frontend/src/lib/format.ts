@@ -129,6 +129,8 @@ export function eventLabel(type: EventType): string {
       return 'Status changed'
     case 'QUEUE_DELETED':
       return 'Queue deleted'
+    case 'QUEUE_ARCHIVED':
+      return 'Queue archived'
     case 'ENTRY_JOINED':
       return 'Joined the queue'
     case 'ENTRY_CALLED':
@@ -145,6 +147,10 @@ export function eventLabel(type: EventType): string {
       return 'Put back in line'
     case 'NOTIFICATION_SENT':
       return 'Notification sent'
+    case 'NOTIFICATION_QUEUED':
+      return 'Notification queued'
+    case 'NOTIFICATION_FAILED':
+      return 'Notification failed'
   }
 }
 

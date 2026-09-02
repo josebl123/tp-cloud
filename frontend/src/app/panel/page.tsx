@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { ApiError, api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
@@ -17,6 +18,7 @@ import { Stat } from '@/components/Stat'
 
 /** The operator's home: how today is going, and every queue at a glance. */
 export default function PanelHomePage() {
+  const router = useRouter()
   const { activeEstablishment, isOwner } = useAuth()
   const establishmentId = activeEstablishment?.id ?? null
 
@@ -108,9 +110,10 @@ export default function PanelHomePage() {
           <div className="mb-4">
             <CreateQueueForm
               establishmentId={establishmentId}
-              onCreated={() => {
+              onCreated={(created) => {
                 setCreating(false)
                 void loadQueues()
+                router.push(`/panel/queue/settings?id=${created.id}`)
               }}
             />
           </div>
@@ -160,12 +163,6 @@ function QueueCard({ queue, board }: { queue: QueueView; board: QueueSnapshot | 
           <div className="font-display text-3xl font-semibold tnum">{board?.inServiceCount ?? '—'}</div>
           <div className="text-xs text-muted">being served</div>
         </div>
-        <div>
-          <div className="font-display text-2xl font-semibold tnum text-brand">
-            {board ? formatWaitNeutral(board.estimatedWaitMinutesForNewEntry) : '—'}
-          </div>
-          <div className="text-xs text-muted">for a new arrival</div>
-        </div>
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
@@ -195,7 +192,7 @@ function CreateQueueForm({
   onCreated,
 }: {
   establishmentId: string
-  onCreated: () => void
+  onCreated: (queue: QueueView) => void
 }) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -209,13 +206,13 @@ function CreateQueueForm({
     setError(null)
     setSubmitting(true)
     try {
-      await api.establishments.createQueue(establishmentId, {
+      const created = await api.establishments.createQueue(establishmentId, {
         name: name.trim(),
         description: description.trim() || undefined,
         serviceStations: Number(serviceStations),
         defaultServiceMinutes: Number(defaultServiceMinutes),
       })
-      onCreated()
+      onCreated(created)
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : 'Something went wrong.')
       setSubmitting(false)

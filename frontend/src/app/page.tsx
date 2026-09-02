@@ -41,7 +41,7 @@ export default function HomePage() {
           {[
             {
               term: 'For the customer',
-              detail: 'Live position, people ahead, and a realistic wait — updated the moment the line moves.',
+              detail: 'Policy-aware groups scheduled before you and a realistic wait — updated the moment the line moves.',
             },
             {
               term: 'For your staff',

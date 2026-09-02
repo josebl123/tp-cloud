@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { ApiError, api } from '@/lib/api'
 import { cx } from '@/lib/format'
 import { usePathSegment } from '@/lib/usePathSegment'
-import type { PublicQueueView } from '@/lib/types'
+import type { PublicQueueView, QueueAvailabilityView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Field } from '@/components/ui/Field'
@@ -28,6 +28,7 @@ export default function JoinQueuePage() {
   const [channel, setChannel] = useState<Channel>('email')
   const [contact, setContact] = useState('')
   const [partySize, setPartySize] = useState('2')
+  const [availability, setAvailability] = useState<QueueAvailabilityView | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -53,18 +54,44 @@ export default function JoinQueuePage() {
     return () => controller.abort()
   }, [queueId])
 
+  useEffect(() => {
+    const size = Number(partySize)
+    if (!queueId || !Number.isInteger(size) || size < 1) {
+      setAvailability(null)
+      return
+    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      api.publicApi.availability(queueId, size, controller.signal).then(setAvailability, (cause: unknown) => {
+        if (!controller.signal.aborted) setFormError(cause instanceof ApiError ? cause.message : 'Could not check availability.')
+      })
+    }, 300)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [partySize, queueId])
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!queueId || !queue) return
 
     setFormError(null)
+    if (!partySize.trim() || Number(partySize) < 1) {
+      setFormError('Enter a group size of at least 1.')
+      return
+    }
+    if (!availability?.available) {
+      setFormError('This group size cannot join right now. Adjust it or check back shortly.')
+      return
+    }
     setSubmitting(true)
     try {
       const ticket = await api.publicApi.join(queueId, {
         name: name.trim(),
         email: channel === 'email' ? contact.trim() : undefined,
         phone: channel === 'phone' ? contact.trim() : undefined,
-        partySize: queue.requirePartySize ? Number(partySize) : undefined,
+        partySize: Number(partySize),
       })
       // A full navigation, not a client-side push: `/t/{token}` is its own exported shell.
       window.location.href = `/t/${ticket.ticketToken}/`
@@ -84,7 +111,7 @@ export default function JoinQueuePage() {
 
   if (!queue) return <CustomerShell><PageLoader label="Checking the queue" /></CustomerShell>
 
-  const closed = !queue.acceptingEntries
+  const closed = !queue.acceptingEntries || (Number(partySize) >= 1 && availability?.available === false)
 
   return (
     <CustomerShell>
@@ -101,20 +128,19 @@ export default function JoinQueuePage() {
             </div>
           </div>
           <div className="rounded-2xl border border-brand/20 bg-brand-soft p-5">
-            <div className="font-display text-4xl font-semibold tnum text-brand">
-              {queue.estimatedWaitMinutes === undefined || queue.estimatedWaitMinutes === 0
-                ? '0'
-                : queue.estimatedWaitMinutes}
-              <span className="ml-1 text-lg font-medium">min</span>
-            </div>
-            <div className="mt-1 text-sm text-brand/80">estimated wait</div>
+            <div className="font-display text-4xl font-semibold tnum text-brand">{queue.full ? 'Full' : 'Open'}</div>
+            <div className="mt-1 text-sm text-brand/80">enter your group size for a quote</div>
           </div>
         </div>
 
         {closed ? (
           <div className="mt-7">
             <Alert kind="warn">
-              {queue.full
+              {availability && !availability.eligible
+                ? 'There is no active lane for this group size. Ask staff for help or adjust the group size.'
+                : availability?.laneFull
+                  ? 'The lane for this group size is full right now. Please check back shortly.'
+                : queue.full || availability?.queueFull
                 ? 'This queue is full right now. Please check back in a little while.'
                 : queue.status === 'PAUSED'
                   ? 'This queue is paused and not taking new people at the moment.'
@@ -123,6 +149,26 @@ export default function JoinQueuePage() {
           </div>
         ) : (
           <form onSubmit={submit} className="mt-8 space-y-5">
+            <Field
+              label="How many people are in your group?"
+              type="number"
+              min={1}
+              max={50}
+              inputMode="numeric"
+              value={partySize}
+              onChange={(event) => setPartySize(event.target.value)}
+              required
+            />
+            {queue.lanes?.length ? (
+              <p className="text-sm text-muted">The system will assign you automatically to a lane: {queue.lanes.filter((lane) => lane.active).map((lane) => `${lane.name} (${lane.minPartySize}–${lane.maxPartySize ?? '∞'})`).join(', ')}.</p>
+            ) : null}
+            {availability ? (
+              <Alert kind={availability.available ? 'info' : 'warn'}>
+                {availability.available
+                  ? `${availability.lane?.name}: place ${availability.lanePosition} in this lane. ${availability.globalWaitingGroupsAhead} groups are scheduled before you under the current call strategy, and ${availability.groupsInService} are in service; about ${availability.estimatedWaitMinutes ?? 0} min.`
+                  : 'This group size is not currently eligible or there is no capacity available.'}
+              </Alert>
+            ) : null}
             <Field
               label="Your name"
               value={name}
@@ -173,19 +219,6 @@ export default function JoinQueuePage() {
                 required
               />
             </div>
-
-            {queue.requirePartySize ? (
-              <Field
-                label="How many people?"
-                type="number"
-                min={1}
-                max={50}
-                inputMode="numeric"
-                value={partySize}
-                onChange={(event) => setPartySize(event.target.value)}
-                required
-              />
-            ) : null}
 
             {formError ? <Alert kind="error">{formError}</Alert> : null}
 
