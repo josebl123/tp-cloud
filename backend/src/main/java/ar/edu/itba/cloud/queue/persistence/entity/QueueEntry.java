@@ -33,6 +33,10 @@ public class QueueEntry {
     @JoinColumn(name = "queue_id", nullable = false, updatable = false)
     private ServiceQueue queue;
 
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "lane_id", nullable = false, updatable = false)
+    private QueueLane lane;
+
     @Column(name = "ticket_token", nullable = false, unique = true, updatable = false)
     private UUID ticketToken;
 
@@ -49,7 +53,7 @@ public class QueueEntry {
     @Column(name = "customer_phone", length = 40)
     private String customerPhone;
 
-    @Column(name = "party_size")
+    @Column(name = "party_size", nullable = false)
     private Integer partySize;
 
     @Enumerated(EnumType.STRING)
@@ -94,7 +98,14 @@ public class QueueEntry {
     public QueueEntry(ServiceQueue queue, UUID ticketToken, long ticketNumber, long orderKey,
                       String customerName, String customerEmail, String customerPhone,
                       Integer partySize, Instant joinedAt) {
+        this(queue, null, ticketToken, ticketNumber, orderKey, customerName, customerEmail, customerPhone, partySize, joinedAt);
+    }
+
+    public QueueEntry(ServiceQueue queue, QueueLane lane, UUID ticketToken, long ticketNumber, long orderKey,
+                      String customerName, String customerEmail, String customerPhone,
+                      Integer partySize, Instant joinedAt) {
         this.queue = queue;
+        this.lane = lane;
         this.ticketToken = ticketToken;
         this.ticketNumber = ticketNumber;
         this.orderKey = orderKey;
@@ -121,6 +132,8 @@ public class QueueEntry {
     public ServiceQueue getQueue() {
         return queue;
     }
+
+    public QueueLane getLane() { return lane; }
 
     public UUID getTicketToken() {
         return ticketToken;

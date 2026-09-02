@@ -11,8 +11,10 @@ public record TicketView(
         String customerName,
         Integer partySize,
         EntryStatus status,
-        Integer position,
-        Integer peopleAhead,
+        Integer lanePosition,
+        Integer laneGroupsAhead,
+        Integer globalWaitingGroupsAhead,
+        int groupsInService,
         Integer estimatedWaitMinutes,
         int noShowCount,
         Instant joinedAt,
@@ -21,5 +23,7 @@ public record TicketView(
         Instant graceExpiresAt,
         Long graceSecondsRemaining,
         QueueSummary queue,
-        String ticketUrl) {
+        String ticketUrl,
+        java.util.UUID laneId,
+        String laneName) {
 }

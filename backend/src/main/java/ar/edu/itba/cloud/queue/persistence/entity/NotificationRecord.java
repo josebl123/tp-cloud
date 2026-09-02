@@ -92,6 +92,11 @@ public class NotificationRecord {
                 : reason.substring(0, 500);
     }
 
+    public void markPending() {
+        this.status = NotificationStatus.PENDING;
+        this.sentAt = null;
+    }
+
     public UUID getId() {
         return id;
     }

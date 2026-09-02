@@ -12,9 +12,8 @@ public record QueueSnapshot(
         List<EntryView> inService,
         int waitingCount,
         int inServiceCount,
-        /** ETA a customer joining right now would be shown. */
-        Integer estimatedWaitMinutesForNewEntry,
         int averageServiceMinutes,
         boolean usingDefaultServiceTime,
-        Instant generatedAt) {
+        Instant generatedAt,
+        List<QueueLaneSnapshot> lanes) {
 }

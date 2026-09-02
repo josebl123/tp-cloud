@@ -17,9 +17,11 @@ public record EntryView(
         String customerPhone,
         Integer partySize,
         EntryStatus status,
-        /** 1-based place in line; null unless WAITING. */
-        Integer position,
-        Integer peopleAhead,
+        /** 1-based place in its lane; null unless WAITING. */
+        Integer lanePosition,
+        Integer laneGroupsAhead,
+        Integer globalWaitingGroupsAhead,
+        int groupsInService,
         Integer estimatedWaitMinutes,
         int noShowCount,
         Instant joinedAt,
@@ -28,5 +30,7 @@ public record EntryView(
         Instant finishedAt,
         Instant graceExpiresAt,
         /** Seconds left to show up before the no-show policy applies; null when not applicable. */
-        Long graceSecondsRemaining) {
+        Long graceSecondsRemaining,
+        java.util.UUID laneId,
+        String laneName) {
 }

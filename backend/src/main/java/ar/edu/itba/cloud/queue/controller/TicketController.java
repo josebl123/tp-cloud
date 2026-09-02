@@ -42,7 +42,7 @@ public class TicketController {
     }
 
     @GetMapping("/{ticketToken}")
-    @Operation(summary = "Current position, people ahead and estimated wait")
+    @Operation(summary = "Policy-aware groups scheduled before the ticket and estimated wait")
     public TicketView get(@PathVariable UUID ticketToken) {
         return ticketService.get(ticketToken);
     }

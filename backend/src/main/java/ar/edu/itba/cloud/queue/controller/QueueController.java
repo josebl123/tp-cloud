@@ -83,7 +83,7 @@ public class QueueController {
     }
 
     @GetMapping("/{queueId}/board")
-    @Operation(summary = "The live board: the line in order, with positions and estimated waits")
+    @Operation(summary = "The live board with lane context and policy-aware estimated waits")
     public QueueSnapshot board(@CurrentUser AuthenticatedUser user, @PathVariable UUID queueId) {
         return queueService.getSnapshot(user.id(), queueId);
     }
@@ -94,7 +94,9 @@ public class QueueController {
                           @PathVariable UUID queueId,
                           @RequestBody(required = false) CallRequest request) {
         if (request == null || request.entryId() == null) {
-            return entryService.callNext(user.id(), queueId);
+            return request != null && request.laneId() != null
+                    ? entryService.callNext(user.id(), queueId, request.laneId())
+                    : entryService.callNext(user.id(), queueId);
         }
         return entryService.call(user.id(), request.entryId());
     }
