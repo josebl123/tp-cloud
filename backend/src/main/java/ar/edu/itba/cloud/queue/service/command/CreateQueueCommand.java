@@ -1,6 +1,7 @@
 package ar.edu.itba.cloud.queue.service.command;
 
 import ar.edu.itba.cloud.queue.persistence.entity.NoShowPolicy;
+import ar.edu.itba.cloud.queue.persistence.entity.CallStrategy;
 
 /** Every field except {@code name} is optional; nulls fall back to the queue defaults. */
 public record CreateQueueCommand(
@@ -14,5 +15,4 @@ public record CreateQueueCommand(
         Integer moveBackPositions,
         Integer notifyAtPosition,
         Integer notifyAtMinutes,
-        Boolean requirePartySize) {
-}
+        CallStrategy callStrategy) { }
