@@ -1,5 +1,6 @@
 package ar.edu.itba.cloud.queue.service;
 
+import ar.edu.itba.cloud.queue.realtime.RealtimeBus;
 import ar.edu.itba.cloud.queue.persistence.entity.ActorType;
 import ar.edu.itba.cloud.queue.persistence.entity.EntryStatus;
 import ar.edu.itba.cloud.queue.persistence.entity.EventType;
@@ -8,12 +9,10 @@ import ar.edu.itba.cloud.queue.persistence.entity.QueueEntry;
 import ar.edu.itba.cloud.queue.persistence.entity.ServiceQueue;
 import ar.edu.itba.cloud.queue.persistence.repository.QueueEntryRepository;
 import ar.edu.itba.cloud.queue.persistence.repository.ServiceQueueRepository;
-import ar.edu.itba.cloud.queue.service.event.QueueChangedEvent;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,7 +33,7 @@ public class GraceService {
     private final QueueOrdering ordering;
     private final EventRecorder eventRecorder;
     private final NotificationService notificationService;
-    private final ApplicationEventPublisher publisher;
+    private final RealtimeBus realtimeBus;
     private final Clock clock;
 
     public GraceService(QueueEntryRepository entryRepository,
@@ -42,14 +41,14 @@ public class GraceService {
                         QueueOrdering ordering,
                         EventRecorder eventRecorder,
                         NotificationService notificationService,
-                        ApplicationEventPublisher publisher,
+                        RealtimeBus realtimeBus,
                         Clock clock) {
         this.entryRepository = entryRepository;
         this.queueRepository = queueRepository;
         this.ordering = ordering;
         this.eventRecorder = eventRecorder;
         this.notificationService = notificationService;
-        this.publisher = publisher;
+        this.realtimeBus = realtimeBus;
         this.clock = clock;
     }
 
@@ -69,7 +68,7 @@ public class GraceService {
             return false;
         }
         queueRepository.save(queue);
-        publisher.publishEvent(new QueueChangedEvent(queueId));
+        realtimeBus.publish(queueId);
         return true;
     }
 

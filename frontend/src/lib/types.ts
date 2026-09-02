@@ -209,4 +209,6 @@ export interface JoinPayload {
   email?: string
   phone?: string
   partySize?: number
+  /** BCP 47 tag. Stored server-side so later notifications keep the customer's language. */
+  locale?: string
 }

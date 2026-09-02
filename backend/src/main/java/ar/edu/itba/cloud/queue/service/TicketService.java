@@ -1,18 +1,17 @@
 package ar.edu.itba.cloud.queue.service;
 
 import ar.edu.itba.cloud.queue.exception.NotFoundException;
+import ar.edu.itba.cloud.queue.realtime.RealtimeBus;
 import ar.edu.itba.cloud.queue.persistence.entity.EntryStatus;
 import ar.edu.itba.cloud.queue.persistence.entity.QueueEntry;
 import ar.edu.itba.cloud.queue.persistence.entity.ServiceQueue;
 import ar.edu.itba.cloud.queue.persistence.repository.QueueEntryRepository;
 import ar.edu.itba.cloud.queue.persistence.repository.ServiceQueueRepository;
-import ar.edu.itba.cloud.queue.service.event.QueueChangedEvent;
 import ar.edu.itba.cloud.queue.service.model.NotificationView;
 import ar.edu.itba.cloud.queue.service.model.TicketView;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,7 +30,7 @@ public class TicketService {
     private final EstimationService estimationService;
     private final QueueViewFactory viewFactory;
     private final NotificationService notificationService;
-    private final ApplicationEventPublisher publisher;
+    private final RealtimeBus realtimeBus;
 
     public TicketService(QueueEntryRepository entryRepository,
                          ServiceQueueRepository queueRepository,
@@ -39,14 +38,14 @@ public class TicketService {
                          EstimationService estimationService,
                          QueueViewFactory viewFactory,
                          NotificationService notificationService,
-                         ApplicationEventPublisher publisher) {
+                         RealtimeBus realtimeBus) {
         this.entryRepository = entryRepository;
         this.queueRepository = queueRepository;
         this.graceService = graceService;
         this.estimationService = estimationService;
         this.viewFactory = viewFactory;
         this.notificationService = notificationService;
-        this.publisher = publisher;
+        this.realtimeBus = realtimeBus;
     }
 
     /**
@@ -61,7 +60,7 @@ public class TicketService {
                 .orElseThrow(() -> NotFoundException.queue(queueId));
 
         if (graceService.expireDue(queue)) {
-            publisher.publishEvent(new QueueChangedEvent(queueId));
+            realtimeBus.publish(queueId);
         }
 
         QueueEntry entry = entryRepository.findByTicketToken(ticketToken).orElseThrow(NotFoundException::ticket);

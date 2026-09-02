@@ -142,6 +142,8 @@ class EstimationServiceTest {
                 new AppProperties.Estimation(samples),
                 new AppProperties.Grace(Duration.ofSeconds(10)),
                 new AppProperties.Sse(Duration.ofMinutes(30), Duration.ofSeconds(20)),
+                new AppProperties.Realtime(AppProperties.Realtime.Mode.LOCAL, "queue_changed",
+                        Duration.ofSeconds(5), Duration.ofSeconds(5)),
                 new AppProperties.Notifications(new AppProperties.Notifications.Email(false, "no-reply@q.local")),
                 new AppProperties.Seed(false));
     }

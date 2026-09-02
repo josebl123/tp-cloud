@@ -33,6 +33,7 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
  */
 @SpringBootTest(properties = {
         "q.grace.sweep-interval=1h",
+        "q.realtime.mode=LOCAL",
         "q.sse.heartbeat-interval=1h",
         "q.public-base-url=http://localhost:3000",
         "q.jwt.secret=integration-test-secret-key-0123456789abcdef",
@@ -84,6 +85,12 @@ abstract class AbstractIntegrationTest {
 
     protected JsonNode doDelete(String path, String token, int expectedStatus) throws Exception {
         return perform(delete(path), null, token, expectedStatus);
+    }
+
+    /** Same as {@link #doPost} but with one extra request header, for Accept-Language cases. */
+    protected JsonNode doPostWithHeader(String path, Object body, String header, String value,
+                                        int expectedStatus) throws Exception {
+        return perform(post(path).header(header, value), body, null, expectedStatus);
     }
 
     private JsonNode perform(MockHttpServletRequestBuilder builder, Object body, String token,

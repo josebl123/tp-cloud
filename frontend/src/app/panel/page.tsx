@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { ApiError, api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
+import { useI18n } from '@/lib/i18n'
 import { formatMinutes, formatPercent, formatWaitNeutral, queueStatusLabel, queueStatusTone } from '@/lib/format'
 import type { MetricsView, QueueSnapshot, QueueView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
@@ -18,6 +19,7 @@ import { Stat } from '@/components/Stat'
 /** The operator's home: how today is going, and every queue at a glance. */
 export default function PanelHomePage() {
   const { activeEstablishment, isOwner } = useAuth()
+  const { t } = useI18n()
   const establishmentId = activeEstablishment?.id ?? null
 
   const [queues, setQueues] = useState<QueueView[] | null>(null)
@@ -33,10 +35,10 @@ export default function PanelHomePage() {
       setQueues(list)
       setError(null)
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : 'Something went wrong.')
+      setError(cause instanceof ApiError ? cause.message : t('common.somethingWrong'))
       setQueues([])
     }
-  }, [establishmentId])
+  }, [establishmentId, t])
 
   useEffect(() => {
     void loadQueues()
@@ -63,41 +65,45 @@ export default function PanelHomePage() {
     return () => window.clearInterval(timer)
   }, [establishmentId, queues])
 
-  if (!activeEstablishment) return <PageLoader label="Loading your establishment" />
-  if (queues === null) return <PageLoader label="Loading queues" />
+  if (!activeEstablishment) return <PageLoader label={t('panel.loadingEstablishment')} />
+  if (queues === null) return <PageLoader label={t('panel.loadingQueues')} />
 
   return (
     <div className="space-y-8">
       <section>
         <div className="flex items-end justify-between gap-4">
           <div>
-            <h1 className="font-display text-3xl font-semibold tracking-tight">Today</h1>
+            <h1 className="font-display text-3xl font-semibold tracking-tight">{t('panel.today')}</h1>
             <p className="mt-1 text-sm text-muted">{activeEstablishment.name}</p>
           </div>
         </div>
 
         <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat label="Waiting now" value={metrics?.waitingNow ?? '—'} emphasis />
-          <Stat label="Served today" value={metrics?.servedCount ?? '—'} />
+          <Stat label={t('panel.waitingNow')} value={metrics?.waitingNow ?? '—'} emphasis />
+          <Stat label={t('panel.servedToday')} value={metrics?.servedCount ?? '—'} />
           <Stat
-            label="Average wait"
+            label={t('panel.averageWait')}
             value={metrics ? formatMinutes(metrics.averageWaitMinutes) : '—'}
-            hint="join to called"
+            hint={t('panel.joinToCalled')}
           />
           <Stat
-            label="No-shows"
+            label={t('panel.noShows')}
             value={metrics ? formatPercent(metrics.noShowRate) : '—'}
-            hint={metrics ? `${metrics.noShowCount} of ${metrics.finishedCount}` : undefined}
+            hint={
+              metrics
+                ? t('panel.ofFinished', { count: metrics.noShowCount, total: metrics.finishedCount })
+                : undefined
+            }
           />
         </div>
       </section>
 
       <section>
         <div className="mb-4 flex items-center justify-between gap-4">
-          <h2 className="font-display text-xl font-semibold tracking-tight">Queues</h2>
+          <h2 className="font-display text-xl font-semibold tracking-tight">{t('panel.queues')}</h2>
           {isOwner ? (
             <Button size="sm" onClick={() => setCreating((value) => !value)}>
-              {creating ? 'Cancel' : 'New queue'}
+              {creating ? t('common.cancel') : t('panel.newQueue')}
             </Button>
           ) : null}
         </div>
@@ -118,10 +124,12 @@ export default function PanelHomePage() {
 
         {queues.length === 0 && !creating ? (
           <EmptyState
-            title="No queues yet"
-            description="A queue is one line with one QR code — a dining room, a counter, a service desk."
+            title={t('panel.noQueuesTitle')}
+            description={t('panel.noQueuesBody')}
             action={
-              isOwner ? <Button onClick={() => setCreating(true)}>Create your first queue</Button> : undefined
+              isOwner ? (
+                <Button onClick={() => setCreating(true)}>{t('panel.createFirstQueue')}</Button>
+              ) : undefined
             }
           />
         ) : (
@@ -137,6 +145,8 @@ export default function PanelHomePage() {
 }
 
 function QueueCard({ queue, board }: { queue: QueueView; board: QueueSnapshot | undefined }) {
+  const { t } = useI18n()
+
   return (
     <Card className="flex flex-col">
       <div className="flex items-start justify-between gap-3">
@@ -147,41 +157,41 @@ function QueueCard({ queue, board }: { queue: QueueView; board: QueueSnapshot | 
           ) : null}
         </div>
         <Badge tone={queueStatusTone(queue.status)} dot>
-          {queueStatusLabel(queue.status)}
+          {queueStatusLabel(t, queue.status)}
         </Badge>
       </div>
 
       <div className="mt-5 flex items-baseline gap-6">
         <div>
           <div className="font-display text-3xl font-semibold tnum">{board?.waitingCount ?? '—'}</div>
-          <div className="text-xs text-muted">waiting</div>
+          <div className="text-xs text-muted">{t('panel.waiting')}</div>
         </div>
         <div>
           <div className="font-display text-3xl font-semibold tnum">{board?.inServiceCount ?? '—'}</div>
-          <div className="text-xs text-muted">being served</div>
+          <div className="text-xs text-muted">{t('panel.beingServed')}</div>
         </div>
         <div>
           <div className="font-display text-2xl font-semibold tnum text-brand">
-            {board ? formatWaitNeutral(board.estimatedWaitMinutesForNewEntry) : '—'}
+            {board ? formatWaitNeutral(t, board.estimatedWaitMinutesForNewEntry) : '—'}
           </div>
-          <div className="text-xs text-muted">for a new arrival</div>
+          <div className="text-xs text-muted">{t('panel.forNewArrival')}</div>
         </div>
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2">
         <Link href={`/panel/queue?id=${queue.id}`} className="flex-1">
           <Button block size="sm">
-            Open board
+            {t('panel.openBoard')}
           </Button>
         </Link>
         <Link href={`/panel/queue/qr?id=${queue.id}`}>
           <Button variant="secondary" size="sm">
-            QR
+            {t('common.qr')}
           </Button>
         </Link>
         <Link href={`/panel/queue/settings?id=${queue.id}`}>
           <Button variant="secondary" size="sm">
-            Settings
+            {t('common.settings')}
           </Button>
         </Link>
       </div>
@@ -203,6 +213,7 @@ function CreateQueueForm({
   const [defaultServiceMinutes, setDefaultServiceMinutes] = useState('10')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const { t } = useI18n()
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -217,54 +228,54 @@ function CreateQueueForm({
       })
       onCreated()
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : 'Something went wrong.')
+      setError(cause instanceof ApiError ? cause.message : t('common.somethingWrong'))
       setSubmitting(false)
     }
   }
 
   return (
     <Card>
-      <CardHeader title="New queue" description="You can fine-tune waits and no-show rules afterwards." />
+      <CardHeader title={t('panel.newQueue')} description={t('panel.newQueueHint')} />
       <form onSubmit={submit} className="space-y-4">
         <Field
-          label="Name"
+          label={t('panel.queueName')}
           value={name}
           onChange={(event) => setName(event.target.value)}
-          placeholder="Tables"
+          placeholder={t('panel.queueNamePlaceholder')}
           maxLength={120}
           required
         />
         <Field
-          label="Description"
+          label={t('panel.description')}
           optional
           value={description}
           onChange={(event) => setDescription(event.target.value)}
-          placeholder="Main dining room queue"
+          placeholder={t('panel.descriptionPlaceholder')}
           maxLength={500}
         />
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
-            label="Service points"
+            label={t('panel.servicePoints')}
             type="number"
             min={1}
             value={serviceStations}
             onChange={(event) => setServiceStations(event.target.value)}
-            hint="How many people you can serve at once."
+            hint={t('panel.servicePointsHint')}
             required
           />
           <Field
-            label="Typical service time"
+            label={t('panel.typicalService')}
             type="number"
             min={1}
             value={defaultServiceMinutes}
             onChange={(event) => setDefaultServiceMinutes(event.target.value)}
-            hint="Minutes. Replaced by real measurements later."
+            hint={t('panel.typicalServiceHint')}
             required
           />
         </div>
         {error ? <Alert kind="error">{error}</Alert> : null}
         <Button type="submit" loading={submitting}>
-          Create queue
+          {t('panel.createQueue')}
         </Button>
       </form>
     </Card>

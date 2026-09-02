@@ -61,10 +61,13 @@
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
+    <!--
+      Compile scope, not runtime: the realtime transport uses the driver's own PGConnection and
+      PGNotification types directly to receive LISTEN/NOTIFY messages.
+    -->
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
-      <scope>runtime</scope>
     </dependency>
 
     <dependency>

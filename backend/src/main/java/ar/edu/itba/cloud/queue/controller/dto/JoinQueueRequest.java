@@ -1,5 +1,6 @@
 package ar.edu.itba.cloud.queue.controller.dto;
 
+import ar.edu.itba.cloud.queue.persistence.entity.SupportedLocale;
 import ar.edu.itba.cloud.queue.service.command.JoinCommand;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Email;
@@ -17,12 +18,15 @@ public record JoinQueueRequest(
         @NotBlank @Size(max = 120) String name,
         @Email @Size(max = 255) String email,
         @Size(max = 40) String phone,
-        @Min(1) Integer partySize) {
+        @Min(1) Integer partySize,
+        /** BCP 47 tag such as "es" or "es-AR". Falls back to the Accept-Language header. */
+        @Size(max = 16) String locale) {
 
     public JoinQueueRequest {
         name = RequestText.trimToNull(name);
         email = RequestText.trimToNull(email);
         phone = RequestText.trimToNull(phone);
+        locale = RequestText.trimToNull(locale);
     }
 
     @AssertTrue(message = "An email address or a phone number is required")
@@ -30,7 +34,11 @@ public record JoinQueueRequest(
         return (email != null && !email.isBlank()) || (phone != null && !phone.isBlank());
     }
 
-    public JoinCommand toCommand() {
-        return new JoinCommand(name, email, phone, partySize);
+    /**
+     * @param acceptLanguage the request header, used when the body did not state a locale
+     */
+    public JoinCommand toCommand(String acceptLanguage) {
+        return new JoinCommand(name, email, phone, partySize,
+                SupportedLocale.fromTag(locale != null ? locale : acceptLanguage));
     }
 }

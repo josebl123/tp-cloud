@@ -2,6 +2,7 @@ package ar.edu.itba.cloud.queue.service;
 
 import ar.edu.itba.cloud.queue.persistence.entity.MembershipRole;
 import ar.edu.itba.cloud.queue.persistence.entity.NoShowPolicy;
+import ar.edu.itba.cloud.queue.persistence.entity.SupportedLocale;
 import ar.edu.itba.cloud.queue.persistence.repository.UserAccountRepository;
 import ar.edu.itba.cloud.queue.service.command.AddMemberCommand;
 import ar.edu.itba.cloud.queue.service.command.CreateQueueCommand;
@@ -74,9 +75,9 @@ public class DevDataSeeder implements ApplicationRunner {
                 "Take away", "Counter pickup for online orders", 1, 5, 20, 60,
                 NoShowPolicy.MOVE_TO_END, 3, 2, 5, false));
 
-        entryService.join(tables.id(), new JoinCommand("Ana Perez", "ana@demo.q", null, 2));
-        entryService.join(tables.id(), new JoinCommand("Bruno Diaz", null, "+541100000001", 4));
-        entryService.join(tables.id(), new JoinCommand("Carla Gomez", "carla@demo.q", "+541100000002", 3));
+        entryService.join(tables.id(), new JoinCommand("Ana Perez", "ana@demo.q", null, 2, SupportedLocale.ES));
+        entryService.join(tables.id(), new JoinCommand("Bruno Diaz", null, "+541100000001", 4, SupportedLocale.ES));
+        entryService.join(tables.id(), new JoinCommand("Carla Gomez", "carla@demo.q", "+541100000002", 3, SupportedLocale.EN));
 
         log.info("Seeded demo data: owner={} staff={} password={}", OWNER_EMAIL, STAFF_EMAIL, PASSWORD);
     }

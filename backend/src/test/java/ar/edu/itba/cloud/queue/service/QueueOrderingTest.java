@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import ar.edu.itba.cloud.queue.persistence.entity.Establishment;
 import ar.edu.itba.cloud.queue.persistence.entity.QueueEntry;
 import ar.edu.itba.cloud.queue.persistence.entity.ServiceQueue;
+import ar.edu.itba.cloud.queue.persistence.entity.SupportedLocale;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -119,7 +120,8 @@ class QueueOrderingTest {
         List<QueueEntry> entries = new ArrayList<>();
         for (int index = 0; index < size; index++) {
             entries.add(new QueueEntry(queue, UUID.randomUUID(), index + 1L, ordering.keyForEnd(queue),
-                    "Customer " + index, "c%d@demo.q".formatted(index), null, null, NOW));
+                    "Customer " + index, "c%d@demo.q".formatted(index), null, null,
+                    SupportedLocale.EN, NOW));
         }
         return entries;
     }

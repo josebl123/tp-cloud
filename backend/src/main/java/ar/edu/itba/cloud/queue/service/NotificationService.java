@@ -15,9 +15,11 @@ import ar.edu.itba.cloud.queue.service.notification.NotificationSender;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.MessageSource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,6 +32,9 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code (entry, type, notification cycle)} means a threshold alert fires exactly once per pass
  * through the line, no matter how many times the queue moves. When a customer is sent back to
  * WAITING after a no-show, the cycle advances and the alerts become eligible again.
+ *
+ * <p>Every message is rendered in the locale the customer joined in, so the email they receive an
+ * hour later is in the same language as the page they read when they took their place.
  */
 @Service
 public class NotificationService {
@@ -43,6 +48,7 @@ public class NotificationService {
     private final ApplicationEventPublisher publisher;
     private final List<NotificationSender> senders;
     private final EstimationService estimationService;
+    private final MessageSource messages;
     private final Clock clock;
 
     public NotificationService(NotificationRecordRepository repository,
@@ -51,6 +57,7 @@ public class NotificationService {
                                ApplicationEventPublisher publisher,
                                List<NotificationSender> senders,
                                EstimationService estimationService,
+                               MessageSource messages,
                                Clock clock) {
         this.repository = repository;
         this.eventRecorder = eventRecorder;
@@ -58,6 +65,7 @@ public class NotificationService {
         this.publisher = publisher;
         this.senders = senders;
         this.estimationService = estimationService;
+        this.messages = messages;
         this.clock = clock;
     }
 
@@ -65,22 +73,18 @@ public class NotificationService {
     public void ticketCreated(QueueEntry entry, int position, Integer estimatedWaitMinutes) {
         ServiceQueue queue = entry.getQueue();
         String eta = estimatedWaitMinutes == null || estimatedWaitMinutes <= 0
-                ? "any moment now"
-                : "about %d minutes".formatted(estimatedWaitMinutes);
+                ? text(entry, "eta.soon")
+                : text(entry, "eta.minutes", estimatedWaitMinutes);
 
         enqueue(entry, NotificationType.TICKET_CREATED,
-                "You're in the queue for %s".formatted(queue.getName()),
-                """
-                Hi %s, you have a place in the "%s" queue at %s.
-
-                Ticket number: %d
-                Current position: %d
-                Estimated wait: %s
-
-                Follow your turn live, and let us know if you leave:
-                %s
-                """.formatted(entry.getCustomerName(), queue.getName(),
-                        queue.getEstablishment().getName(), entry.getTicketNumber(), position, eta,
+                text(entry, "ticket-created.subject", queue.getName()),
+                text(entry, "ticket-created.body",
+                        entry.getCustomerName(),
+                        queue.getName(),
+                        queue.getEstablishment().getName(),
+                        entry.getTicketNumber(),
+                        position,
+                        eta,
                         properties.ticketUrl(entry.getTicketToken())));
     }
 
@@ -88,43 +92,35 @@ public class NotificationService {
     public void yourTurn(QueueEntry entry) {
         ServiceQueue queue = entry.getQueue();
         String graceLine = queue.getGracePeriodSeconds() > 0
-                ? "You have %d minutes to come over before you lose your place.".formatted(
-                        Math.max(1, queue.getGracePeriodSeconds() / 60))
-                : "We're waiting for you.";
+                ? text(entry, "your-turn.grace", Math.max(1, queue.getGracePeriodSeconds() / 60))
+                : text(entry, "your-turn.no-grace");
 
         enqueue(entry, NotificationType.YOUR_TURN,
-                "It's your turn at %s".formatted(queue.getName()),
-                """
-                Hi %s, it's your turn (ticket %d) in "%s" at %s.
-
-                %s
-
-                %s
-                """.formatted(entry.getCustomerName(), entry.getTicketNumber(), queue.getName(),
-                        queue.getEstablishment().getName(), graceLine,
+                text(entry, "your-turn.subject", queue.getName()),
+                text(entry, "your-turn.body",
+                        entry.getCustomerName(),
+                        entry.getTicketNumber(),
+                        queue.getName(),
+                        queue.getEstablishment().getName(),
+                        graceLine,
                         properties.ticketUrl(entry.getTicketToken())));
     }
 
     /** Sent when the grace period runs out, explaining what the establishment's policy did. */
     public void noShow(QueueEntry entry, NoShowPolicy policy, Integer newPosition) {
         ServiceQueue queue = entry.getQueue();
-        String outcome = switch (policy) {
-            case REMOVE -> "Unfortunately you have lost your place in the queue.";
-            case MOVE_TO_END -> "We have moved you to the end of the queue.";
-            case MOVE_BACK -> "We have moved you %d places further back.".formatted(queue.getMoveBackPositions());
-            case KEEP_POSITION -> "You have kept your place in the queue.";
-        };
-        String positionLine = newPosition == null ? "" : "%nYour new position is %d.".formatted(newPosition);
+        String outcome = policy == NoShowPolicy.MOVE_BACK
+                ? text(entry, "no-show.outcome.MOVE_BACK", queue.getMoveBackPositions())
+                : text(entry, "no-show.outcome." + policy.name());
+        String positionLine = newPosition == null ? "" : text(entry, "no-show.position", newPosition);
 
         enqueue(entry, NotificationType.NO_SHOW,
-                "We could not serve you at %s".formatted(queue.getName()),
-                """
-                Hi %s, the time to come over for "%s" ran out.
-
-                %s%s
-
-                %s
-                """.formatted(entry.getCustomerName(), queue.getName(), outcome, positionLine,
+                text(entry, "no-show.subject", queue.getName()),
+                text(entry, "no-show.body",
+                        entry.getCustomerName(),
+                        queue.getName(),
+                        outcome,
+                        positionLine,
                         properties.ticketUrl(entry.getTicketToken())));
     }
 
@@ -132,19 +128,17 @@ public class NotificationService {
     public void queueClosed(QueueEntry entry) {
         ServiceQueue queue = entry.getQueue();
         enqueue(entry, NotificationType.QUEUE_CLOSED,
-                "The %s queue has closed".formatted(queue.getName()),
-                """
-                Hi %s, the "%s" queue at %s has closed and your place is no longer active.
-
-                Sorry for the inconvenience.
-                """.formatted(entry.getCustomerName(), queue.getName(),
+                text(entry, "queue-closed.subject", queue.getName()),
+                text(entry, "queue-closed.body",
+                        entry.getCustomerName(),
+                        queue.getName(),
                         queue.getEstablishment().getName()));
     }
 
     /**
      * Fires the configured proximity alerts for everyone still waiting.
      *
-     * @param waiting  the WAITING entries in service order
+     * @param waiting   the WAITING entries in service order
      * @param inService how many customers currently occupy a service station
      */
     public void evaluateThresholds(ServiceQueue queue, List<QueueEntry> waiting, long inService,
@@ -163,27 +157,25 @@ public class NotificationService {
 
             if (positionThreshold != null && peopleAhead <= positionThreshold) {
                 enqueue(entry, NotificationType.APPROACHING_POSITION,
-                        "Your turn at %s is coming up".formatted(queue.getName()),
-                        """
-                        Hi %s, there are %d person(s) ahead of you in "%s" at %s.
-
-                        Estimated wait: %d minute(s).
-                        %s
-                        """.formatted(entry.getCustomerName(), peopleAhead, queue.getName(),
-                                queue.getEstablishment().getName(), estimatedMinutes,
+                        text(entry, "approaching-position.subject", queue.getName()),
+                        text(entry, "approaching-position.body",
+                                entry.getCustomerName(),
+                                peopleAhead,
+                                queue.getName(),
+                                queue.getEstablishment().getName(),
+                                estimatedMinutes,
                                 properties.ticketUrl(entry.getTicketToken())));
             }
 
             if (minutesThreshold != null && estimatedMinutes <= minutesThreshold) {
                 enqueue(entry, NotificationType.APPROACHING_TIME,
-                        "About %d minutes until your turn".formatted(estimatedMinutes),
-                        """
-                        Hi %s, your turn in "%s" at %s should come in about %d minute(s).
-
-                        Current position: %d.
-                        %s
-                        """.formatted(entry.getCustomerName(), queue.getName(),
-                                queue.getEstablishment().getName(), estimatedMinutes, peopleAhead + 1,
+                        text(entry, "approaching-time.subject", estimatedMinutes),
+                        text(entry, "approaching-time.body",
+                                entry.getCustomerName(),
+                                queue.getName(),
+                                queue.getEstablishment().getName(),
+                                estimatedMinutes,
+                                peopleAhead + 1,
                                 properties.ticketUrl(entry.getTicketToken())));
             }
         }
@@ -196,6 +188,12 @@ public class NotificationService {
                         record.getStatus(), record.getDestination(), record.getSubject(),
                         record.getCreatedAt(), record.getSentAt()))
                 .toList();
+    }
+
+    /** Renders one message bundle key in the customer's own language. */
+    private String text(QueueEntry entry, String key, Object... args) {
+        Locale locale = entry.getLocale().toLocale();
+        return messages.getMessage(key, args, key, locale);
     }
 
     private void enqueue(QueueEntry entry, NotificationType type, String subject, String body) {
@@ -211,7 +209,7 @@ public class NotificationService {
                 clip(subject, MAX_SUBJECT), clip(body, MAX_BODY), clock.instant()));
 
         eventRecorder.recordBySystem(entry.getQueue().getId(), entry.getId(), EventType.NOTIFICATION_SENT,
-                "type=%s channel=%s".formatted(type, channel));
+                "type=%s channel=%s locale=%s".formatted(type, channel, entry.getLocale()));
         publisher.publishEvent(new NotificationQueuedEvent(record.getId()));
     }
 

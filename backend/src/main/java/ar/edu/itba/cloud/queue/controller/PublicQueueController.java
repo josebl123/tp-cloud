@@ -14,12 +14,14 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.UUID;
 import org.springframework.http.CacheControl;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -72,9 +74,11 @@ public class PublicQueueController {
                     channel supplied, which is how a customer gets back to their place after closing
                     the browser or changing device.
                     """)
-    public ResponseEntity<TicketView> join(@PathVariable UUID queueId,
-                                           @Valid @RequestBody JoinQueueRequest request) {
-        TicketView ticket = entryService.join(queueId, request.toCommand());
+    public ResponseEntity<TicketView> join(
+            @PathVariable UUID queueId,
+            @Valid @RequestBody JoinQueueRequest request,
+            @RequestHeader(value = HttpHeaders.ACCEPT_LANGUAGE, required = false) String acceptLanguage) {
+        TicketView ticket = entryService.join(queueId, request.toCommand(acceptLanguage));
         return ResponseEntity
                 .created(URI.create("/api/v1/public/tickets/" + ticket.ticketToken()))
                 .body(ticket);

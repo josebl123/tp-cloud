@@ -15,6 +15,7 @@ import {
   queueStatusLabel,
   queueStatusTone,
 } from '@/lib/format'
+import { useI18n } from '@/lib/i18n'
 import { getToken } from '@/lib/session'
 import { useLiveResource } from '@/lib/useLiveResource'
 import { useQueryParam } from '@/lib/usePathSegment'
@@ -37,6 +38,7 @@ import { Stat } from '@/components/Stat'
  * server decides, and the stream delivers the truth.
  */
 export default function QueueBoardPage() {
+  const { t } = useI18n()
   const queueId = useQueryParam('id')
   const [token, setTokenState] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -72,7 +74,7 @@ export default function QueueBoardPage() {
       await task()
       refresh()
     } catch (cause) {
-      setActionError(cause instanceof ApiError ? cause.message : 'Something went wrong.')
+      setActionError(cause instanceof ApiError ? cause.message : t('common.somethingWrong'))
     } finally {
       setBusyEntry(null)
       setCalling(false)
@@ -89,8 +91,8 @@ export default function QueueBoardPage() {
 
   const setQueueStatus = (status: QueueStatus) => void run(() => api.queues.setStatus(queueId as string, status))
 
-  if (queueId === null) return <Alert kind="error">No queue selected.</Alert>
-  if (loading && !board) return <PageLoader label="Loading the board" />
+  if (queueId === null) return <Alert kind="error">{t('board.noQueueSelected')}</Alert>
+  if (loading && !board) return <PageLoader label={t('board.loading')} />
   if (error && !board) return <Alert kind="error">{error.message}</Alert>
   if (!board) return <PageLoader />
 
@@ -102,12 +104,12 @@ export default function QueueBoardPage() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <Link href="/panel" className="text-sm text-muted hover:text-ink">
-            ← All queues
+            ← {t('board.allQueues')}
           </Link>
           <div className="mt-1 flex flex-wrap items-center gap-3">
             <h1 className="font-display text-3xl font-semibold tracking-tight">{queue.name}</h1>
             <Badge tone={queueStatusTone(queue.status)} dot>
-              {queueStatusLabel(queue.status)}
+              {queueStatusLabel(t, queue.status)}
             </Badge>
             <LiveDot live={live} />
           </div>
@@ -116,62 +118,63 @@ export default function QueueBoardPage() {
         <div className="flex flex-wrap gap-2">
           {queue.status === 'OPEN' ? (
             <Button variant="secondary" size="sm" onClick={() => setQueueStatus('PAUSED')}>
-              Pause
+              {t('board.pause')}
             </Button>
           ) : (
             <Button variant="secondary" size="sm" onClick={() => setQueueStatus('OPEN')}>
-              {closed ? 'Reopen' : 'Resume'}
+              {closed ? t('board.reopen') : t('board.resume')}
             </Button>
           )}
           {!closed ? (
             <Button variant="ghost" size="sm" onClick={() => setConfirmClose(true)}>
-              Close
+              {t('board.close')}
             </Button>
           ) : null}
           <Link href={`/panel/queue/qr?id=${queue.id}`}>
             <Button variant="secondary" size="sm">
-              QR
+              {t('common.qr')}
             </Button>
           </Link>
           <Link href={`/panel/queue/settings?id=${queue.id}`}>
             <Button variant="secondary" size="sm">
-              Settings
+              {t('common.settings')}
             </Button>
           </Link>
         </div>
       </header>
 
       {queue.status === 'PAUSED' ? (
-        <Alert kind="warn">
-          Paused — nobody new can join, but you can keep working through the people already in line.
-        </Alert>
+        <Alert kind="warn">{t('board.pausedNotice')}</Alert>
       ) : null}
-      {closed ? <Alert kind="info">This queue is closed. Reopen it to start taking people again.</Alert> : null}
+      {closed ? <Alert kind="info">{t('board.closedNotice')}</Alert> : null}
       {actionError ? <Alert kind="error">{actionError}</Alert> : null}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Waiting" value={board.waitingCount} emphasis />
-        <Stat label="Being served" value={board.inServiceCount} />
+        <Stat label={t('board.statWaiting')} value={board.waitingCount} emphasis />
+        <Stat label={t('board.statBeingServed')} value={board.inServiceCount} />
         <Stat
-          label="Average service"
+          label={t('board.statAverageService')}
           value={`${board.averageServiceMinutes} min`}
-          hint={board.usingDefaultServiceTime ? 'configured estimate' : 'measured'}
+          hint={board.usingDefaultServiceTime ? t('board.configuredEstimate') : t('board.measured')}
         />
-        <Stat label="Wait for a new arrival" value={formatWaitNeutral(board.estimatedWaitMinutesForNewEntry)} />
+        <Stat
+          label={t('board.statNewArrival')}
+          value={formatWaitNeutral(t, board.estimatedWaitMinutesForNewEntry)}
+        />
       </div>
 
       <Button size="lg" block onClick={callNext} loading={calling} disabled={closed || board.waitingCount === 0}>
-        {board.waitingCount === 0 ? 'Nobody waiting' : 'Call next customer'}
+        {board.waitingCount === 0 ? t('board.nobodyWaiting') : t('board.callNext')}
       </Button>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <section>
           <h2 className="mb-3 font-display text-lg font-semibold tracking-tight">
-            Now serving{' '}
+            {t('board.nowServing')}{' '}
             <span className="text-muted tnum">{board.inServiceCount > 0 ? board.inServiceCount : ''}</span>
           </h2>
           {board.inService.length === 0 ? (
-            <EmptyState title="Nobody called yet" description="Call the next customer to get started." />
+            <EmptyState title={t('board.nobodyCalledTitle')} description={t('board.nobodyCalledBody')} />
           ) : (
             <div className="space-y-3">
               {board.inService.map((entry) => (
@@ -188,10 +191,11 @@ export default function QueueBoardPage() {
 
         <section>
           <h2 className="mb-3 font-display text-lg font-semibold tracking-tight">
-            In line <span className="text-muted tnum">{board.waitingCount > 0 ? board.waitingCount : ''}</span>
+            {t('board.inLine')}{' '}
+            <span className="text-muted tnum">{board.waitingCount > 0 ? board.waitingCount : ''}</span>
           </h2>
           {board.waiting.length === 0 ? (
-            <EmptyState title="The line is empty" description="New arrivals show up here the moment they scan." />
+            <EmptyState title={t('board.lineEmptyTitle')} description={t('board.lineEmptyBody')} />
           ) : (
             <ol className="space-y-2">
               {board.waiting.map((entry) => (
@@ -215,7 +219,7 @@ export default function QueueBoardPage() {
           className="flex w-full items-center justify-between rounded-xl border border-line bg-surface px-4 py-3 text-left text-sm font-medium transition-colors hover:bg-raised"
           aria-expanded={showActivity}
         >
-          <span>Recent activity</span>
+          <span>{t('board.recentActivity')}</span>
           <span className={cx('text-faint transition-transform', showActivity && 'rotate-180')} aria-hidden>
             ▾
           </span>
@@ -223,12 +227,12 @@ export default function QueueBoardPage() {
         {showActivity ? (
           <ul className="mt-2 divide-y divide-line overflow-hidden rounded-xl border border-line bg-surface">
             {events.length === 0 ? (
-              <li className="px-4 py-3 text-sm text-faint">Nothing recorded yet.</li>
+              <li className="px-4 py-3 text-sm text-faint">{t('board.noActivity')}</li>
             ) : (
               events.map((event) => (
                 <li key={event.id} className="flex items-baseline justify-between gap-4 px-4 py-2.5 text-sm">
                   <span>
-                    {eventLabel(event.type)}
+                    {eventLabel(t, event.type)}
                     {event.detail ? <span className="ml-2 text-xs text-faint">{event.detail}</span> : null}
                   </span>
                   <span className="shrink-0 text-xs text-faint tnum">{formatClock(event.occurredAt)}</span>
@@ -241,13 +245,15 @@ export default function QueueBoardPage() {
 
       <ConfirmDialog
         open={confirmClose}
-        title="Close this queue?"
+        title={t('board.confirmCloseTitle')}
         description={
           board.waitingCount + board.inServiceCount > 0
-            ? `${board.waitingCount + board.inServiceCount} people are still in this queue. Closing it releases their places and notifies them.`
-            : 'Nobody can join a closed queue until you reopen it.'
+            ? t('board.confirmCloseWithPeople', {
+                count: board.waitingCount + board.inServiceCount,
+              })
+            : t('board.confirmCloseEmpty')
         }
-        confirmLabel="Close queue"
+        confirmLabel={t('board.confirmCloseAction')}
         destructive
         onConfirm={() => {
           setConfirmClose(false)
@@ -268,6 +274,7 @@ function ServingCard({
   busy: boolean
   onStatus: (status: EntryStatus) => void
 }) {
+  const { t } = useI18n()
   const remaining = useTicker(entry.graceSecondsRemaining, entry.calledAt)
   const expiring = remaining !== null && remaining <= 30
 
@@ -277,11 +284,11 @@ function ServingCard({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-display text-xl font-semibold tnum">#{entry.ticketNumber}</span>
-            <Badge tone={entryStatusTone(entry.status)}>{entryStatusLabel(entry.status)}</Badge>
+            <Badge tone={entryStatusTone(entry.status)}>{entryStatusLabel(t, entry.status)}</Badge>
           </div>
           <p className="mt-1 truncate text-lg">{entry.customerName}</p>
           <p className="mt-0.5 text-sm text-muted">
-            {entry.partySize ? `Party of ${entry.partySize} · ` : ''}
+            {entry.partySize ? `${t('board.partyOf', { count: entry.partySize })} · ` : ''}
             {entry.customerPhone ?? entry.customerEmail}
           </p>
         </div>
@@ -289,7 +296,7 @@ function ServingCard({
         {remaining !== null ? (
           <div className={cx('text-right', expiring ? 'text-danger' : 'text-muted')}>
             <div className="font-display text-2xl font-semibold tnum">{formatCountdown(remaining)}</div>
-            <div className="text-xs">grace left</div>
+            <div className="text-xs">{t('board.graceLeft')}</div>
           </div>
         ) : null}
       </div>
@@ -297,19 +304,19 @@ function ServingCard({
       <div className="mt-4 flex flex-wrap gap-2">
         {entry.status === 'CALLED' ? (
           <Button size="sm" onClick={() => onStatus('SERVING')} loading={busy}>
-            They arrived
+            {t('board.theyArrived')}
           </Button>
         ) : null}
         <Button size="sm" variant="secondary" onClick={() => onStatus('SERVED')} disabled={busy}>
-          Done
+          {t('board.done')}
         </Button>
         {entry.status === 'CALLED' ? (
           <Button size="sm" variant="ghost" onClick={() => onStatus('NO_SHOW')} disabled={busy}>
-            No show
+            {t('board.noShow')}
           </Button>
         ) : null}
         <Button size="sm" variant="ghost" onClick={() => onStatus('WAITING')} disabled={busy}>
-          Put back
+          {t('board.putBack')}
         </Button>
       </div>
     </Card>
@@ -327,6 +334,8 @@ function WaitingRow({
   busy: boolean
   onStatus: (status: EntryStatus) => void
 }) {
+  const { t } = useI18n()
+
   return (
     <li className="flex items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5">
       <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-raised font-display text-base font-semibold tnum">
@@ -339,21 +348,21 @@ function WaitingRow({
           {entry.partySize ? <span className="ml-1.5 text-sm text-muted">· {entry.partySize}</span> : null}
         </p>
         <p className="text-xs text-muted tnum">
-          #{entry.ticketNumber} · waiting {formatSince(entry.joinedAt)}
-          {entry.noShowCount > 0 ? ` · ${entry.noShowCount} no-show` : ''}
+          #{entry.ticketNumber} · {t('board.waitingFor', { since: formatSince(t, entry.joinedAt) })}
+          {entry.noShowCount > 0 ? ` · ${t('board.noShowCount', { count: entry.noShowCount })}` : ''}
         </p>
       </div>
 
       <span className="hidden shrink-0 text-sm text-muted tnum sm:block">
-        {formatWaitNeutral(entry.estimatedWaitMinutes)}
+        {formatWaitNeutral(t, entry.estimatedWaitMinutes)}
       </span>
 
       <div className="flex shrink-0 gap-1">
         <Button size="sm" onClick={() => onStatus('CALLED')} loading={busy} disabled={disabled}>
-          Call
+          {t('board.call')}
         </Button>
         <Button size="sm" variant="ghost" onClick={() => onStatus('LEFT')} disabled={busy}>
-          Remove
+          {t('board.remove')}
         </Button>
       </div>
     </li>

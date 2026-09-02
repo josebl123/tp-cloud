@@ -3,6 +3,7 @@
 import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from 'react'
 import { useId } from 'react'
 import { cx } from '@/lib/format'
+import { useI18n } from '@/lib/i18n'
 
 const CONTROL =
   'w-full rounded-xl border border-line-strong bg-surface px-3.5 py-2.5 text-ink ' +
@@ -17,6 +18,7 @@ interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 export function Field({ label, hint, error, optional, className, id, ...rest }: FieldProps) {
+  const { t } = useI18n()
   const generatedId = useId()
   const fieldId = id ?? generatedId
 
@@ -24,7 +26,7 @@ export function Field({ label, hint, error, optional, className, id, ...rest }: 
     <div className={className}>
       <label htmlFor={fieldId} className="mb-1.5 flex items-baseline justify-between gap-2">
         <span className="text-sm font-medium">{label}</span>
-        {optional ? <span className="text-xs text-faint">Optional</span> : null}
+        {optional ? <span className="text-xs text-faint">{t('common.optional')}</span> : null}
       </label>
       <input
         {...rest}

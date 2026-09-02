@@ -476,17 +476,50 @@ no other change.
 
 The customer stream needs none of this: the ticket token in the path *is* the credential.
 
-### 9.3 Fan-out, and the one piece of state
+### 9.3 Fan-out across instances: PostgreSQL LISTEN/NOTIFY
 
-`SseHub` holds emitters in a `ConcurrentHashMap` keyed by queue id. `RealtimeBroadcaster` listens for
-`QueueChangedEvent` after commit, rebuilds the board once for staff and each subscribed ticket
-individually, and pushes.
+`SseHub` holds emitters in a `ConcurrentHashMap` keyed by queue id — necessarily local to one JVM, since
+an open TCP connection cannot be shared. Behind a load balancer that creates a real problem:
 
-**This is the only non-stateless part of the backend.** With more than one replica, a customer would
-only receive updates produced by the instance holding their connection. The fix is well understood
-and does not touch business logic: fan `QueueChangedEvent` out through a shared broker (Redis
-pub/sub, SNS, or a managed WebSocket API) and have every instance push to its local emitters. This
-limitation is documented in `SseHub`'s own Javadoc so it cannot be discovered by surprise.
+```
+Ana's phone ── SSE ──▶ EC2-a            EC2-a holds her connection
+Staff "call next" ───▶ EC2-b            the load balancer routed this elsewhere
+                        └─ writes to RDS, pushes to its own emitters — it has none for Ana
+```
+
+The database is correct; the *news* that it changed is trapped in one process.
+
+**The solution is the database itself.** Every instance opens one dedicated connection and issues
+`LISTEN queue_changed`. A change publishes `SELECT pg_notify('queue_changed', '<queueId>')` from
+inside its own transaction. On commit, PostgreSQL delivers to every listening instance, each of which
+rebuilds the affected payload from the database and pushes to whichever of its own connections care.
+
+Three properties make this the right fit rather than merely the cheap one:
+
+* **Transactional by construction.** PostgreSQL withholds a `NOTIFY` until commit and discards it on
+  rollback. The rule "never announce a change that did not stick" moves out of application code and
+  into the database. There is a test that publishes inside a rolled-back transaction and asserts
+  nothing is delivered.
+* **Duplicates collapse.** Identical notifications within one transaction are delivered once —
+  exactly right, because every listener rebuilds the whole board anyway.
+* **No state travels.** The payload is only a queue id. Listeners re-read from RDS, so a duplicated,
+  late or out-of-order message can trigger a redundant read but never a wrong screen.
+
+Delivery is **at-most-once**: an instance that is reconnecting hears nothing during the gap. That is
+survivable precisely because the client already falls back to polling whenever its stream is down and
+re-fetches on reconnect. The failure mode is "updates in five seconds instead of fifty milliseconds",
+never "updates that are wrong". Durable messages — the notification emails — do not use this path;
+they are rows in `notification_record`.
+
+The transport sits behind a `RealtimeBus` interface with two implementations, chosen by
+`q.realtime.mode`: `POSTGRES` in every deployed environment, and `LOCAL` (an in-JVM Spring event) in
+the test suite, where a real round-trip would only add latency and non-determinism.
+
+**Operational notes.** The listening session needs its own connection, outside HikariCP — borrowing
+one from the pool and never returning it would permanently shrink the pool. `NOTIFY` payloads are
+capped at 8000 bytes (we send a 36-character UUID). It does not work through RDS Proxy, and
+notifications are not replicated to read replicas, so both the publisher and the listeners use the
+writer endpoint.
 
 A 20-second heartbeat comment keeps idle connections alive through intermediaries.
 
@@ -620,6 +653,32 @@ of me, and how long?* Every choice follows from that question.
 * **Semantic tokens only** — never a raw hex in a component. Dark mode re-points the same tokens
   under `prefers-color-scheme`, so each component is written once and is correct in both themes.
 
+### 12.4 Language (cross-cutting)
+
+Q speaks English and Spanish (rioplatense). The rule is that **a customer's language is a property of
+their visit, not of the browser session**, because a notification sent an hour after someone joined
+must match the page they were reading when they took their place.
+
+* **Frontend.** A first-party dictionary and context — no i18n dependency. English is the source of
+  truth and `MessageKey` is derived from it, so the Spanish bundle is typed as a *complete* record of
+  those keys: a missing translation is a compile error, not something a user discovers. Resolution is
+  an explicit choice (persisted) → `navigator.language` → English, with a switcher for when detection
+  guesses wrong.
+* **Backend.** The resolved locale travels in the join request (falling back to `Accept-Language`) and
+  is stored on `queue_entry`. Notification copy lives in Spring `MessageSource` bundles and is
+  rendered per entry. An unrecognised language falls back to English rather than failing — nobody is
+  turned away over a locale header.
+
+The one visible trade-off: pages are prerendered in English at build time, so a Spanish browser sees
+one frame of English before hydration swaps it. Resolving earlier would make the client's first render
+disagree with the served HTML.
+
+**Not translated:** data the business owns — queue names, descriptions, establishment names. Those are
+shown exactly as the owner typed them.
+
+`next-intl` was rejected because it wants `[locale]` route segments, which fight the single-shell
+static export described in §12.1.
+
 ---
 
 ## 13. Testing strategy
@@ -677,15 +736,22 @@ architecture should scale with load and cost nothing when idle. The split above 
 * **The database is the only stateful component**, and the per-queue row lock means concurrency
   correctness does not degrade as replicas are added.
 
-### 14.3 What must change before running more than one replica
+### 14.3 Running more than one instance
 
-1. **SSE fan-out** (§9.3) — the one genuine blocker. Publish `QueueChangedEvent` to a shared broker.
-2. **`GraceSweepJob`** — every replica would run it. Correctness is preserved by the queue lock (the
+Horizontal scaling works today. The cross-instance blocker — SSE fan-out — is solved by
+LISTEN/NOTIFY (§9.3), verified by running two instances against one database: a customer streaming
+from instance A receives a change made entirely on instance B, and with the transport forced to
+`LOCAL` that same update is provably lost.
+
+Two smaller items remain:
+
+1. **`GraceSweepJob`** — every instance runs it. Correctness is preserved by the per-queue lock (the
    second instance finds nothing left to expire), but the duplicated work is wasteful; a leader
-   election or a scheduled cloud trigger removes it.
-3. **`JWT_SECRET`** must be a real secret from a parameter store, shared across tasks.
+   election or a scheduled cloud trigger would remove it.
+2. **`JWT_SECRET`** must come from a parameter store and be identical across instances, or tokens
+   issued by one instance will be rejected by another.
 
-None of these touch business logic, which is the point of having isolated them behind seams.
+Neither touches business logic, which is the point of having isolated them behind seams.
 
 ---
 
@@ -699,6 +765,7 @@ None of these touch business logic, which is the point of having isolated them b
 | 4 | Anonymous ticket-token capability | Customer accounts; phone-number lookup | "Datos mínimos" is a stated requirement; an unguessable capability is the smallest thing that works | Whoever holds the link controls the ticket |
 | 5 | Contact channel required at join | Name only | The ticket link is the recovery mechanism; without a channel it cannot be delivered | Enforced at DTO, service and schema |
 | 6 | SSE for live updates | WebSocket/STOMP; polling | Traffic is unidirectional; SSE is plain HTTP and reconnects itself | Token must ride in a query param for staff |
+| 6b | PostgreSQL LISTEN/NOTIFY for cross-instance fan-out | ElastiCache Redis pub/sub; SNS; database polling | Redis pub/sub offers *identical* at-most-once semantics for ~$12/mo and a new failure domain; RDS is already in the architecture and adds the transactional guarantee for free | At-most-once delivery, tolerated by the client's polling fallback; rules out RDS Proxy |
 | 7 | Notifications delivered after commit | Inline within the transaction | Never tell someone "it's your turn" for a transaction that rolls back | Failures are recorded, never propagated |
 | 8 | De-duplication by `(entry, type, cycle)` | Timestamp-based throttling | Structural and exact; a requeued customer is legitimately notified again | One extra counter column |
 | 9 | Grace expiry both lazy and swept | One or the other | Lazy alone stalls unwatched queues; sweep alone shows stale state on read | Two call sites, one shared implementation |
@@ -716,7 +783,8 @@ None of these touch business logic, which is the point of having isolated them b
 
 | Limitation | Impact | Path forward |
 |---|---|---|
-| SSE emitters are per-instance | Blocks running >1 API replica | Shared broker fan-out (§9.3) |
+| Realtime delivery is at-most-once | An instance reconnecting misses pushes | Already tolerated: the client polls while its stream is down |
+| `GraceSweepJob` runs on every instance | Duplicated work, not incorrect | Leader election or a scheduled cloud trigger |
 | Staff SSE token in query string | Tokens may appear in access logs | Cookie via same-site proxy |
 | No frontend test suite | Regressions caught by hand only | Playwright against the real stack |
 | No rate limiting on public join | Abuse vector on an open endpoint | Edge rate limiting |

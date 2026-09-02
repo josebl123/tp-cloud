@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState, type FormEvent } from 'react'
 import { ApiError, api } from '@/lib/api'
 import { useAuth } from '@/lib/auth'
+import { useI18n, type Translate } from '@/lib/i18n'
 import { useQueryParam } from '@/lib/usePathSegment'
 import type { NoShowPolicy, QueueView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
@@ -14,18 +15,19 @@ import { Field, SelectField } from '@/components/ui/Field'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { PageLoader } from '@/components/PageLoader'
 
-const POLICY_HELP: Record<NoShowPolicy, string> = {
-  KEEP_POSITION: 'They keep the exact place they had. The most forgiving option.',
-  MOVE_BACK: 'They drop a few places, so the people right behind them are not held up.',
-  MOVE_TO_END: 'They go to the back of the line and start their wait again.',
-  REMOVE: 'They lose their place entirely and have to rejoin.',
-}
+const policyHelp = (t: Translate): Record<NoShowPolicy, string> => ({
+  KEEP_POSITION: t('settings.policyKeepHelp'),
+  MOVE_BACK: t('settings.policyMoveBackHelp'),
+  MOVE_TO_END: t('settings.policyMoveEndHelp'),
+  REMOVE: t('settings.policyRemoveHelp'),
+})
 
 /** Everything about how a queue behaves. Owner-only; the API enforces that too. */
 export default function QueueSettingsPage() {
   const router = useRouter()
   const queueId = useQueryParam('id')
   const { isOwner } = useAuth()
+  const { t } = useI18n()
 
   const [queue, setQueue] = useState<QueueView | null>(null)
   const [form, setForm] = useState<Record<string, string>>({})
@@ -55,9 +57,9 @@ export default function QueueSettingsPage() {
           notifyAtMinutes: loaded.notifyAtMinutes === undefined ? '' : String(loaded.notifyAtMinutes),
         })
       },
-      (cause: unknown) => setError(cause instanceof ApiError ? cause.message : 'Something went wrong.'),
+      (cause: unknown) => setError(cause instanceof ApiError ? cause.message : t('common.somethingWrong')),
     )
-  }, [queueId])
+  }, [queueId, t])
 
   const update = (key: string) => (event: { target: { value: string } }) => {
     setForm((current) => ({ ...current, [key]: event.target.value }))
@@ -90,7 +92,7 @@ export default function QueueSettingsPage() {
       setQueue(updated)
       setSaved(true)
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : 'Something went wrong.')
+      setError(cause instanceof ApiError ? cause.message : t('common.somethingWrong'))
     } finally {
       setSaving(false)
     }
@@ -102,35 +104,35 @@ export default function QueueSettingsPage() {
       await api.queues.remove(queueId)
       router.replace('/panel')
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : 'Something went wrong.')
+      setError(cause instanceof ApiError ? cause.message : t('common.somethingWrong'))
       setConfirmDelete(false)
     }
   }
 
-  if (queueId === null) return <Alert kind="error">No queue selected.</Alert>
-  if (!queue) return error ? <Alert kind="error">{error}</Alert> : <PageLoader label="Loading settings" />
+  if (queueId === null) return <Alert kind="error">{t('board.noQueueSelected')}</Alert>
+  if (!queue) return error ? <Alert kind="error">{error}</Alert> : <PageLoader label={t('settings.loading')} />
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <header>
         <Link href={`/panel/queue?id=${queue.id}`} className="text-sm text-muted hover:text-ink">
-          ← Back to the board
+          ← {t('settings.backToBoard')}
         </Link>
         <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight">{queue.name}</h1>
-        <p className="mt-1 text-sm text-muted">Settings</p>
+        <p className="mt-1 text-sm text-muted">{t('settings.title')}</p>
       </header>
 
       {!isOwner ? (
-        <Alert kind="info">Only the owner of this establishment can change these settings.</Alert>
+        <Alert kind="info">{t('settings.ownerOnly')}</Alert>
       ) : null}
 
       <form onSubmit={save} className="space-y-6">
         <Card>
-          <CardHeader title="Basics" />
+          <CardHeader title={t('settings.basics')} />
           <div className="space-y-4">
-            <Field label="Name" value={form.name ?? ''} onChange={update('name')} maxLength={120} required />
+            <Field label={t('panel.queueName')} value={form.name ?? ''} onChange={update('name')} maxLength={120} required />
             <Field
-              label="Description"
+              label={t('panel.description')}
               optional
               value={form.description ?? ''}
               onChange={update('description')}
@@ -141,36 +143,36 @@ export default function QueueSettingsPage() {
 
         <Card>
           <CardHeader
-            title="Waiting times"
-            description="These two numbers decide every estimate a customer is shown."
+            title={t('settings.waitingTimes')}
+            description={t('settings.waitingTimesHint')}
           />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
-              label="Service points"
+              label={t('panel.servicePoints')}
               type="number"
               min={1}
               value={form.serviceStations ?? ''}
               onChange={update('serviceStations')}
-              hint="People you can serve at the same time."
+              hint={t('settings.servicePointsHint')}
               required
             />
             <Field
-              label="Typical service time"
+              label={t('panel.typicalService')}
               type="number"
               min={1}
               value={form.defaultServiceMinutes ?? ''}
               onChange={update('defaultServiceMinutes')}
-              hint="Minutes. Only used until real services are measured."
+              hint={t('settings.typicalServiceHint')}
               required
             />
             <Field
-              label="Maximum queue size"
+              label={t('settings.maxSize')}
               optional
               type="number"
               min={1}
               value={form.maxSize ?? ''}
               onChange={update('maxSize')}
-              hint="Leave empty for no limit."
+              hint={t('settings.maxSizeHint')}
             />
             <div className="flex items-center">
               <label className="flex cursor-pointer items-start gap-3">
@@ -184,9 +186,9 @@ export default function QueueSettingsPage() {
                   className="mt-0.5 size-4 accent-[var(--color-brand)]"
                 />
                 <span>
-                  <span className="text-sm font-medium">Ask how many people</span>
+                  <span className="text-sm font-medium">{t('settings.askPartySize')}</span>
                   <span className="mt-0.5 block text-xs text-muted">
-                    Useful for tables; unnecessary at a counter.
+                    {t('settings.askPartySizeHint')}
                   </span>
                 </span>
               </label>
@@ -196,36 +198,36 @@ export default function QueueSettingsPage() {
 
         <Card>
           <CardHeader
-            title="When someone doesn't show up"
-            description="After you call a customer, they get a grace period to arrive."
+            title={t('settings.noShowTitle')}
+            description={t('settings.noShowHint')}
           />
           <div className="space-y-4">
             <Field
-              label="Grace period"
+              label={t('settings.gracePeriod')}
               type="number"
               min={0}
               value={form.gracePeriodSeconds ?? ''}
               onChange={update('gracePeriodSeconds')}
-              hint="Seconds. Use 0 if you'd rather decide yourself, with no automatic no-shows."
+              hint={t('settings.gracePeriodHint')}
               required
             />
             <SelectField
-              label="Then what happens"
+              label={t('settings.thenWhat')}
               value={policy}
               onChange={(event) => {
                 setPolicy(event.target.value as NoShowPolicy)
                 setSaved(false)
               }}
-              hint={POLICY_HELP[policy]}
+              hint={policyHelp(t)[policy]}
             >
-              <option value="KEEP_POSITION">Keep their place</option>
-              <option value="MOVE_BACK">Move them back a few places</option>
-              <option value="MOVE_TO_END">Move them to the end</option>
-              <option value="REMOVE">Remove them from the queue</option>
+              <option value="KEEP_POSITION">{t('settings.policyKeep')}</option>
+              <option value="MOVE_BACK">{t('settings.policyMoveBack')}</option>
+              <option value="MOVE_TO_END">{t('settings.policyMoveEnd')}</option>
+              <option value="REMOVE">{t('settings.policyRemove')}</option>
             </SelectField>
             {policy === 'MOVE_BACK' ? (
               <Field
-                label="How many places back"
+                label={t('settings.placesBack')}
                 type="number"
                 min={1}
                 value={form.moveBackPositions ?? ''}
@@ -238,41 +240,41 @@ export default function QueueSettingsPage() {
 
         <Card>
           <CardHeader
-            title="Notifications"
-            description="When to warn a customer that their turn is coming. Leave either one empty to switch it off."
+            title={t('settings.notifications')}
+            description={t('settings.notificationsHint')}
           />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
-              label="When this many are ahead"
+              label={t('settings.notifyPosition')}
               optional
               type="number"
               min={1}
               value={form.notifyAtPosition ?? ''}
               onChange={update('notifyAtPosition')}
-              hint="e.g. 3 — warn once only three people are in front."
+              hint={t('settings.notifyPositionHint')}
             />
             <Field
-              label="When this close in minutes"
+              label={t('settings.notifyMinutes')}
               optional
               type="number"
               min={1}
               value={form.notifyAtMinutes ?? ''}
               onChange={update('notifyAtMinutes')}
-              hint="e.g. 10 — warn once the estimate drops to ten minutes."
+              hint={t('settings.notifyMinutesHint')}
             />
           </div>
         </Card>
 
         {error ? <Alert kind="error">{error}</Alert> : null}
-        {saved ? <Alert kind="success">Settings saved.</Alert> : null}
+        {saved ? <Alert kind="success">{t('settings.saved')}</Alert> : null}
 
         <div className="flex items-center gap-3">
           <Button type="submit" loading={saving} disabled={!isOwner}>
-            Save changes
+            {t('settings.save')}
           </Button>
           <Link href={`/panel/queue?id=${queue.id}`}>
             <Button type="button" variant="ghost">
-              Cancel
+              {t('common.cancel')}
             </Button>
           </Link>
         </div>
@@ -281,20 +283,20 @@ export default function QueueSettingsPage() {
       {isOwner ? (
         <Card className="border-danger/25">
           <CardHeader
-            title="Delete this queue"
-            description="Removes the queue, its QR code and its whole history. This cannot be undone."
+            title={t('settings.deleteTitle')}
+            description={t('settings.deleteHint')}
           />
           <Button variant="danger" onClick={() => setConfirmDelete(true)}>
-            Delete queue
+            {t('settings.delete')}
           </Button>
         </Card>
       ) : null}
 
       <ConfirmDialog
         open={confirmDelete}
-        title={`Delete "${queue.name}"?`}
-        description="The QR code stops working and every ticket and metric for this queue is removed."
-        confirmLabel="Delete queue"
+        title={t('settings.confirmDeleteTitle', { name: queue.name })}
+        description={t('settings.confirmDeleteBody')}
+        confirmLabel={t('settings.delete')}
         destructive
         onConfirm={remove}
         onCancel={() => setConfirmDelete(false)}

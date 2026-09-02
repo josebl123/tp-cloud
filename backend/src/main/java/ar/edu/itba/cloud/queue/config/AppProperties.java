@@ -18,6 +18,7 @@ public record AppProperties(
         @DefaultValue Estimation estimation,
         @DefaultValue Grace grace,
         @DefaultValue Sse sse,
+        @DefaultValue Realtime realtime,
         @DefaultValue Notifications notifications,
         @DefaultValue Seed seed) {
 
@@ -35,6 +36,25 @@ public record AppProperties(
     public record Grace(
             /** How often the background job looks for expired grace periods. */
             @DefaultValue("10s") Duration sweepInterval) {
+    }
+
+    /**
+     * How a queue change reaches other application instances.
+     *
+     * <p>POSTGRES uses LISTEN/NOTIFY, which is what allows more than one instance behind a load
+     * balancer. LOCAL keeps the message inside the JVM and is used by the tests, where a real
+     * notification round-trip would only add latency and non-determinism.
+     */
+    public record Realtime(
+            @DefaultValue("POSTGRES") Mode mode,
+            @DefaultValue("queue_changed") String channel,
+            @DefaultValue("5s") Duration pollTimeout,
+            @DefaultValue("5s") Duration reconnectDelay) {
+
+        public enum Mode {
+            LOCAL,
+            POSTGRES
+        }
     }
 
     public record Sse(

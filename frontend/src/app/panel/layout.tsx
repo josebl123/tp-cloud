@@ -4,6 +4,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect } from 'react'
 import { useAuth } from '@/lib/auth'
+import { useI18n } from '@/lib/i18n'
+import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { Button } from '@/components/ui/Button'
 import { Logo } from '@/components/Logo'
 import { PageLoader } from '@/components/PageLoader'
@@ -17,13 +19,14 @@ import { PageLoader } from '@/components/PageLoader'
 export default function PanelLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const { user, initialising, establishments, activeEstablishment, selectEstablishment, logout } = useAuth()
+  const { t } = useI18n()
 
   useEffect(() => {
     if (!initialising && !user) router.replace('/login')
   }, [initialising, user, router])
 
-  if (initialising) return <PageLoader label="Signing you in" />
-  if (!user) return <PageLoader label="Redirecting" />
+  if (initialising) return <PageLoader label={t('panel.signingIn')} />
+  if (!user) return <PageLoader label={t('panel.redirecting')} />
 
   return (
     <div className="min-h-dvh">
@@ -37,7 +40,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
             <select
               value={activeEstablishment?.id ?? ''}
               onChange={(event) => selectEstablishment(event.target.value)}
-              aria-label="Establishment"
+              aria-label={t('panel.establishment')}
               className="max-w-[42vw] truncate rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-sm"
             >
               {establishments.map((establishment) => (
@@ -51,9 +54,10 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
           ) : null}
 
           <div className="ml-auto flex items-center gap-2">
+            <LanguageSwitcher />
             <span className="hidden text-sm text-muted sm:inline">{user.displayName}</span>
             <Button variant="ghost" size="sm" onClick={logout}>
-              Sign out
+              {t('common.signOut')}
             </Button>
           </div>
         </div>

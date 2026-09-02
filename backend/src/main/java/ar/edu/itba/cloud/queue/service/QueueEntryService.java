@@ -3,6 +3,7 @@ package ar.edu.itba.cloud.queue.service;
 import ar.edu.itba.cloud.queue.exception.ConflictException;
 import ar.edu.itba.cloud.queue.exception.NotFoundException;
 import ar.edu.itba.cloud.queue.exception.ValidationException;
+import ar.edu.itba.cloud.queue.realtime.RealtimeBus;
 import ar.edu.itba.cloud.queue.persistence.entity.ActorType;
 import ar.edu.itba.cloud.queue.persistence.entity.EntryStatus;
 import ar.edu.itba.cloud.queue.persistence.entity.EventType;
@@ -12,7 +13,6 @@ import ar.edu.itba.cloud.queue.persistence.entity.ServiceQueue;
 import ar.edu.itba.cloud.queue.persistence.repository.QueueEntryRepository;
 import ar.edu.itba.cloud.queue.persistence.repository.ServiceQueueRepository;
 import ar.edu.itba.cloud.queue.service.command.JoinCommand;
-import ar.edu.itba.cloud.queue.service.event.QueueChangedEvent;
 import ar.edu.itba.cloud.queue.service.model.EntryView;
 import ar.edu.itba.cloud.queue.service.model.NotificationView;
 import ar.edu.itba.cloud.queue.service.model.QueueEventView;
@@ -24,7 +24,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,7 +50,7 @@ public class QueueEntryService {
     private final GraceService graceService;
     private final QueueViewFactory viewFactory;
     private final AccessGuard accessGuard;
-    private final ApplicationEventPublisher publisher;
+    private final RealtimeBus realtimeBus;
     private final Clock clock;
 
     public QueueEntryService(ServiceQueueRepository queueRepository,
@@ -63,7 +62,7 @@ public class QueueEntryService {
                              GraceService graceService,
                              QueueViewFactory viewFactory,
                              AccessGuard accessGuard,
-                             ApplicationEventPublisher publisher,
+                             RealtimeBus realtimeBus,
                              Clock clock) {
         this.queueRepository = queueRepository;
         this.entryRepository = entryRepository;
@@ -74,7 +73,7 @@ public class QueueEntryService {
         this.graceService = graceService;
         this.viewFactory = viewFactory;
         this.accessGuard = accessGuard;
-        this.publisher = publisher;
+        this.realtimeBus = realtimeBus;
         this.clock = clock;
     }
 
@@ -108,7 +107,8 @@ public class QueueEntryService {
         }
 
         QueueEntry entry = new QueueEntry(queue, UUID.randomUUID(), queue.allocateTicketNumber(),
-                ordering.keyForEnd(queue), name, email, phone, command.partySize(), clock.instant());
+                ordering.keyForEnd(queue), name, email, phone, command.partySize(),
+                command.locale(), clock.instant());
         entryRepository.save(entry);
         queueRepository.save(queue);
 
@@ -374,7 +374,7 @@ public class QueueEntryService {
         Context context = precomputed != null ? precomputed : context(queue);
         notificationService.evaluateThresholds(queue, context.waiting(), context.inServiceCount(),
                 context.averageService());
-        publisher.publishEvent(new QueueChangedEvent(queue.getId()));
+        realtimeBus.publish(queue.getId());
         return context;
     }
 

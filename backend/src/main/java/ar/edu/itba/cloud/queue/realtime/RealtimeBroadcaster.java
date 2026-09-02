@@ -36,11 +36,28 @@ public class RealtimeBroadcaster {
         this.ticketService = ticketService;
     }
 
+    /** Entry point for the single-instance transport, which delivers after commit. */
     @TransactionalEventListener(fallbackExecution = true)
     @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
     public void onQueueChanged(QueueChangedEvent event) {
-        UUID queueId = event.queueId();
+        push(event.queueId());
+    }
 
+    /**
+     * Entry point for the PostgreSQL transport. Already past commit by definition, since the database
+     * withholds a notification until then.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    public void broadcast(UUID queueId) {
+        push(queueId);
+    }
+
+    /** Whether this instance holds any connection that would care about this queue. */
+    public boolean hasSubscribers(UUID queueId) {
+        return hub.hasStaffSubscribers(queueId) || !hub.subscribedTickets(queueId).isEmpty();
+    }
+
+    private void push(UUID queueId) {
         if (hub.hasStaffSubscribers(queueId)) {
             try {
                 hub.sendToStaff(queueId, QUEUE_EVENT, queueService.readSnapshot(queueId));

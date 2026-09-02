@@ -2,6 +2,7 @@ package ar.edu.itba.cloud.queue.service;
 
 import ar.edu.itba.cloud.queue.exception.NotFoundException;
 import ar.edu.itba.cloud.queue.exception.ValidationException;
+import ar.edu.itba.cloud.queue.realtime.RealtimeBus;
 import ar.edu.itba.cloud.queue.persistence.entity.Establishment;
 import ar.edu.itba.cloud.queue.persistence.entity.EntryStatus;
 import ar.edu.itba.cloud.queue.persistence.entity.EventType;
@@ -13,7 +14,6 @@ import ar.edu.itba.cloud.queue.persistence.repository.QueueEntryRepository;
 import ar.edu.itba.cloud.queue.persistence.repository.ServiceQueueRepository;
 import ar.edu.itba.cloud.queue.service.command.CreateQueueCommand;
 import ar.edu.itba.cloud.queue.service.command.UpdateQueueCommand;
-import ar.edu.itba.cloud.queue.service.event.QueueChangedEvent;
 import ar.edu.itba.cloud.queue.service.model.PublicQueueView;
 import ar.edu.itba.cloud.queue.service.model.QueueEventView;
 import ar.edu.itba.cloud.queue.service.model.QueueSnapshot;
@@ -22,7 +22,6 @@ import ar.edu.itba.cloud.queue.persistence.entity.ActorType;
 import java.time.Clock;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,7 +44,7 @@ public class QueueService {
     private final QueueViewFactory viewFactory;
     private final AccessGuard accessGuard;
     private final EventRecorder eventRecorder;
-    private final ApplicationEventPublisher publisher;
+    private final RealtimeBus realtimeBus;
     private final Clock clock;
 
     public QueueService(ServiceQueueRepository queueRepository,
@@ -56,7 +55,7 @@ public class QueueService {
                         QueueViewFactory viewFactory,
                         AccessGuard accessGuard,
                         EventRecorder eventRecorder,
-                        ApplicationEventPublisher publisher,
+                        RealtimeBus realtimeBus,
                         Clock clock) {
         this.queueRepository = queueRepository;
         this.entryRepository = entryRepository;
@@ -66,7 +65,7 @@ public class QueueService {
         this.viewFactory = viewFactory;
         this.accessGuard = accessGuard;
         this.eventRecorder = eventRecorder;
-        this.publisher = publisher;
+        this.realtimeBus = realtimeBus;
         this.clock = clock;
     }
 
@@ -112,7 +111,7 @@ public class QueueService {
         queueRepository.save(queue);
 
         eventRecorder.record(queueId, null, EventType.QUEUE_UPDATED, ActorType.STAFF, userId, null);
-        publisher.publishEvent(new QueueChangedEvent(queueId));
+        realtimeBus.publish(queueId);
         return viewFactory.queueView(queue);
     }
 
@@ -144,7 +143,7 @@ public class QueueService {
 
         eventRecorder.record(queueId, null, EventType.QUEUE_STATUS_CHANGED, ActorType.STAFF, userId,
                 "from=%s to=%s".formatted(previous, status));
-        publisher.publishEvent(new QueueChangedEvent(queueId));
+        realtimeBus.publish(queueId);
         return viewFactory.queueView(queue);
     }
 
@@ -164,7 +163,7 @@ public class QueueService {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
         if (graceService.expireDue(queue)) {
-            publisher.publishEvent(new QueueChangedEvent(queueId));
+            realtimeBus.publish(queueId);
         }
         return buildSnapshot(queue);
     }
@@ -180,7 +179,7 @@ public class QueueService {
     public PublicQueueView publicView(UUID queueId) {
         ServiceQueue queue = lock(queueId);
         if (graceService.expireDue(queue)) {
-            publisher.publishEvent(new QueueChangedEvent(queueId));
+            realtimeBus.publish(queueId);
         }
         int waiting = (int) entryRepository.countByQueueIdAndStatus(queueId, EntryStatus.WAITING);
         int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId,

@@ -20,6 +20,13 @@ spring:
     port: ${MAIL_PORT:1025}
   jackson:
     default-property-inclusion: non_null
+  messages:
+    # Customer-facing notification copy. The default bundle is English; _es adds Spanish.
+    basename: i18n/notifications
+    encoding: UTF-8
+    # Never fall back to the server's own locale - that would make the language depend on the host.
+    fallback-to-system-locale: false
+    always-use-message-format: true
   threads:
     virtual:
       enabled: true

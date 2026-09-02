@@ -18,11 +18,10 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <p>Two audiences subscribe to the same queue: staff watching the board, and customers watching
  * their own ticket. Both are keyed by queue id, because every line movement affects all of them.
  *
- * <p><strong>Scaling note:</strong> emitters live in this JVM only, so with more than one instance a
- * customer would only receive updates produced by the instance holding their connection. Moving to
- * several replicas means fanning the {@code QueueChangedEvent} out through a shared broker
- * (Redis pub/sub, SNS, a managed WebSocket API) and having every instance push to its local
- * emitters. The rest of the application is stateless and needs no change for that.
+ * <p><strong>Emitters are local to this JVM, and that is fine.</strong> A change made on another
+ * instance still reaches these connections, because queue changes travel between instances through
+ * PostgreSQL LISTEN/NOTIFY - see {@link RealtimeBus} and {@link PostgresNotificationListener}. Each
+ * instance is told which queue moved and pushes to whichever of its own emitters care.
  */
 @Component
 public class SseHub {

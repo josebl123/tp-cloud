@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
+import { useI18n } from '@/lib/i18n'
 import { Button } from './ui/Button'
 
 /**
@@ -26,6 +27,7 @@ export function ConfirmDialog({
   onConfirm: () => void
   onCancel: () => void
 }) {
+  const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -56,7 +58,7 @@ export function ConfirmDialog({
         <p className="mt-2 text-sm text-muted">{description}</p>
         <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button
             ref={confirmRef}

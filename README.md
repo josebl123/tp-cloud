@@ -18,6 +18,7 @@ of the "Queue" proposal.
 | **3. Notificaciones del turno** | Configurable proximity thresholds (by position and by minutes), the "it's your turn" alert, and an audited notification history. |
 | **4. Gestion de la fila por el comercio** | Staff board, call / serve / no-show / cancel, pause and resume, and queue + establishment metrics. |
 | **5. Abandono y periodo de gracia** | `DELETE /public/tickets/{token}` frees the place; a configurable grace period plus four no-show policies decide what happens to someone who does not show up. |
+| **Idiomas** | English and Spanish, following the browser. The locale is stored with the entry, so notification emails arrive in the same language as the page the customer joined from. |
 
 ## Stack
 
@@ -157,12 +158,13 @@ Everything is overridable by environment variable; defaults suit local developme
 
 ## Toward the cloud deployment
 
-The application is stateless apart from one thing, and that one thing is documented in
-`realtime/SseHub`: SSE emitters live in the JVM holding the connection. Running more than one
-replica means fanning `QueueChangedEvent` out through a shared broker (Redis pub/sub, SNS, a managed
-WebSocket API) and having each instance push to its local emitters.
+The API is stateless and runs behind a load balancer as several instances. The one piece of
+per-instance state - the open SSE connections - is handled by **PostgreSQL LISTEN/NOTIFY**: a queue
+change is announced on a database channel, every instance hears it, and each pushes to whichever of
+its own connections care. No message broker, no extra service, and because PostgreSQL withholds a
+notification until the transaction commits, nothing is ever announced that did not stick.
 
-Two other seams were left deliberately swappable:
+Two seams were left deliberately swappable:
 
 * `NotificationSender` - today SMTP and a logger; SES/SNS/a WhatsApp provider drop in behind it
   without touching any business logic.

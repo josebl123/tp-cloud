@@ -52,6 +52,11 @@ public class QueueEntry {
     @Column(name = "party_size")
     private Integer partySize;
 
+    /** Language this customer joined in; every notification to them is rendered in it. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "locale", nullable = false, length = 8)
+    private SupportedLocale locale = SupportedLocale.DEFAULT;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 16)
     private EntryStatus status = EntryStatus.WAITING;
@@ -93,7 +98,7 @@ public class QueueEntry {
 
     public QueueEntry(ServiceQueue queue, UUID ticketToken, long ticketNumber, long orderKey,
                       String customerName, String customerEmail, String customerPhone,
-                      Integer partySize, Instant joinedAt) {
+                      Integer partySize, SupportedLocale locale, Instant joinedAt) {
         this.queue = queue;
         this.ticketToken = ticketToken;
         this.ticketNumber = ticketNumber;
@@ -102,6 +107,7 @@ public class QueueEntry {
         this.customerEmail = customerEmail;
         this.customerPhone = customerPhone;
         this.partySize = partySize;
+        this.locale = locale == null ? SupportedLocale.DEFAULT : locale;
         this.joinedAt = joinedAt;
         this.status = EntryStatus.WAITING;
     }
@@ -144,6 +150,10 @@ public class QueueEntry {
 
     public Integer getPartySize() {
         return partySize;
+    }
+
+    public SupportedLocale getLocale() {
+        return locale;
     }
 
     public EntryStatus getStatus() {

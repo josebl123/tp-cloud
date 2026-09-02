@@ -3,6 +3,8 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { ApiError, api } from '@/lib/api'
 import { cx } from '@/lib/format'
+import { useI18n } from '@/lib/i18n'
+import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { usePathSegment } from '@/lib/usePathSegment'
 import type { PublicQueueView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
@@ -20,6 +22,7 @@ type Channel = 'email' | 'phone'
  * queue's real state comes first, at a size readable at arm's length, and the form sits underneath.
  */
 export default function JoinQueuePage() {
+  const { t, tp, locale } = useI18n()
   const queueId = usePathSegment(1)
   const [queue, setQueue] = useState<PublicQueueView | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -33,7 +36,7 @@ export default function JoinQueuePage() {
 
   useEffect(() => {
     if (!queueId) {
-      if (queueId === null) setLoadError('This link is missing a queue.')
+      if (queueId === null) setLoadError(t('join.missingQueue'))
       return
     }
     const controller = new AbortController()
@@ -44,14 +47,14 @@ export default function JoinQueuePage() {
         if (controller.signal.aborted) return
         setLoadError(
           cause instanceof ApiError && cause.status === 404
-            ? "This queue doesn't exist any more. Ask the staff for a current QR code."
+            ? t('join.queueGone')
             : cause instanceof ApiError
               ? cause.message
-              : 'Something went wrong.',
+              : t('common.somethingWrong'),
         )
       })
     return () => controller.abort()
-  }, [queueId])
+  }, [queueId, t])
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -65,11 +68,13 @@ export default function JoinQueuePage() {
         email: channel === 'email' ? contact.trim() : undefined,
         phone: channel === 'phone' ? contact.trim() : undefined,
         partySize: queue.requirePartySize ? Number(partySize) : undefined,
+        // Remembered server-side, so the ticket email arrives in the language this page is in.
+        locale,
       })
       // A full navigation, not a client-side push: `/t/{token}` is its own exported shell.
       window.location.href = `/t/${ticket.ticketToken}/`
     } catch (cause) {
-      setFormError(cause instanceof ApiError ? cause.message : 'Something went wrong.')
+      setFormError(cause instanceof ApiError ? cause.message : t('common.somethingWrong'))
       setSubmitting(false)
     }
   }
@@ -82,7 +87,7 @@ export default function JoinQueuePage() {
     )
   }
 
-  if (!queue) return <CustomerShell><PageLoader label="Checking the queue" /></CustomerShell>
+  if (!queue) return <CustomerShell><PageLoader label={t('join.checking')} /></CustomerShell>
 
   const closed = !queue.acceptingEntries
 
@@ -97,7 +102,7 @@ export default function JoinQueuePage() {
           <div className="rounded-2xl border border-line bg-surface p-5 shadow-soft">
             <div className="font-display text-4xl font-semibold tnum">{queue.waitingCount}</div>
             <div className="mt-1 text-sm text-muted">
-              {queue.waitingCount === 1 ? 'person waiting' : 'people waiting'}
+              {tp('join.peopleWaiting', queue.waitingCount)}
             </div>
           </div>
           <div className="rounded-2xl border border-brand/20 bg-brand-soft p-5">
@@ -105,9 +110,9 @@ export default function JoinQueuePage() {
               {queue.estimatedWaitMinutes === undefined || queue.estimatedWaitMinutes === 0
                 ? '0'
                 : queue.estimatedWaitMinutes}
-              <span className="ml-1 text-lg font-medium">min</span>
+              <span className="ml-1 text-lg font-medium">{t('join.minutesShort')}</span>
             </div>
-            <div className="mt-1 text-sm text-brand/80">estimated wait</div>
+            <div className="mt-1 text-sm text-brand/80">{t('join.estimatedWait')}</div>
           </div>
         </div>
 
@@ -115,19 +120,19 @@ export default function JoinQueuePage() {
           <div className="mt-7">
             <Alert kind="warn">
               {queue.full
-                ? 'This queue is full right now. Please check back in a little while.'
+                ? t('join.full')
                 : queue.status === 'PAUSED'
-                  ? 'This queue is paused and not taking new people at the moment.'
-                  : 'This queue is closed right now.'}
+                  ? t('join.paused')
+                  : t('join.closed')}
             </Alert>
           </div>
         ) : (
           <form onSubmit={submit} className="mt-8 space-y-5">
             <Field
-              label="Your name"
+              label={t('join.yourName')}
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Ana Perez"
+              placeholder={t('join.namePlaceholder')}
               autoComplete="name"
               maxLength={120}
               required
@@ -135,11 +140,11 @@ export default function JoinQueuePage() {
 
             <div>
               <div className="mb-1.5 flex items-baseline justify-between gap-2">
-                <span className="text-sm font-medium">How should we reach you?</span>
+                <span className="text-sm font-medium">{t('join.howReach')}</span>
               </div>
               <div
                 role="tablist"
-                aria-label="Contact method"
+                aria-label={t('join.howReach')}
                 className="mb-3 inline-flex rounded-xl border border-line-strong bg-raised p-1"
               >
                 {(['email', 'phone'] as const).map((option) => (
@@ -157,26 +162,28 @@ export default function JoinQueuePage() {
                       channel === option ? 'bg-surface text-ink shadow-soft' : 'text-muted hover:text-ink',
                     )}
                   >
-                    {option === 'email' ? 'Email' : 'Phone'}
+                    {option === 'email' ? t('join.channelEmail') : t('join.channelPhone')}
                   </button>
                 ))}
               </div>
               <Field
-                label={channel === 'email' ? 'Email address' : 'Phone number'}
+                label={channel === 'email' ? t('join.emailLabel') : t('join.phoneLabel')}
                 type={channel === 'email' ? 'email' : 'tel'}
                 inputMode={channel === 'email' ? 'email' : 'tel'}
                 autoComplete={channel === 'email' ? 'email' : 'tel'}
                 value={contact}
                 onChange={(event) => setContact(event.target.value)}
-                placeholder={channel === 'email' ? 'ana@example.com' : '+54 9 11 0000 0000'}
-                hint="We send your ticket link here, so you can close this page and come back to it."
+                placeholder={
+                  channel === 'email' ? t('join.emailPlaceholder') : t('join.phonePlaceholder')
+                }
+                hint={t('join.contactHint')}
                 required
               />
             </div>
 
             {queue.requirePartySize ? (
               <Field
-                label="How many people?"
+                label={t('join.partySize')}
                 type="number"
                 min={1}
                 max={50}
@@ -190,11 +197,9 @@ export default function JoinQueuePage() {
             {formError ? <Alert kind="error">{formError}</Alert> : null}
 
             <Button type="submit" size="lg" block loading={submitting}>
-              Take my place in line
+              {t('join.submit')}
             </Button>
-            <p className="text-center text-xs text-faint">
-              You can leave the queue at any time, from the same link.
-            </p>
+            <p className="text-center text-xs text-faint">{t('join.leaveAnytime')}</p>
           </form>
         )}
       </div>
@@ -205,9 +210,12 @@ export default function JoinQueuePage() {
 function CustomerShell({ children }: { children: React.ReactNode }) {
   return (
     <main className="mx-auto min-h-dvh w-full max-w-md px-5 pt-8 pb-16">
-      <div className="mb-8 text-muted">
-        <LogoMark className="size-7" />
-        <span className="sr-only">Q</span>
+      <div className="mb-8 flex items-center justify-between text-muted">
+        <span>
+          <LogoMark className="size-7" />
+          <span className="sr-only">Q</span>
+        </span>
+        <LanguageSwitcher />
       </div>
       {children}
     </main>

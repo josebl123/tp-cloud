@@ -58,9 +58,6 @@ same.
 
 ## Known limits
 
-* **SSE fan-out is per-instance on the backend.** With more than one API replica a customer only
-  receives updates produced by the instance holding their connection. The frontend needs no change
-  when that is fixed; see the scaling note in `realtime/SseHub`.
 * **The staff stream passes its token as a query parameter**, because `EventSource` cannot set
   headers. Tokens can therefore appear in access logs. Behind a proxy that converts the token to a
   cookie this goes away.

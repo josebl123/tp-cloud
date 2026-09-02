@@ -1,4 +1,6 @@
 q:
+  realtime:
+    mode: POSTGRES
   notifications:
     email:
       enabled: true
