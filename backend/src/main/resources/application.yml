@@ -5,6 +5,16 @@ spring:
     url: ${DB_URL:jdbc:postgresql://localhost:55432/qdb}
     username: ${DB_USER:q}
     password: ${DB_PASSWORD:q}
+    hikari:
+      # Sized for a small RDS instance shared by several application instances. Each instance also
+      # holds one connection outside this pool for LISTEN/NOTIFY.
+      maximum-pool-size: ${DB_POOL_MAX:10}
+      minimum-idle: 2
+      connection-timeout: 10000
+      # Recycle below the idle timeouts a managed database or NAT gateway may impose.
+      max-lifetime: 1500000
+      keepalive-time: 300000
+      pool-name: q-pool
   jpa:
     open-in-view: false
     hibernate:
@@ -30,21 +40,48 @@ spring:
   threads:
     virtual:
       enabled: true
+  lifecycle:
+    # Long enough to finish in-flight work, short enough not to stall an Auto Scaling Group
+    # terminating the instance. Live streams are closed before this wait begins.
+    timeout-per-shutdown-phase: 25s
 
 server:
   port: ${PORT:8080}
   error:
     include-message: never
+  # Finish in-flight requests instead of cutting them off when an instance is being replaced.
+  shutdown: graceful
+  # Behind a load balancer and a CDN, X-Forwarded-* carries the real scheme, host and client address.
+  # Without this the application believes every request arrived over plain HTTP from the proxy.
+  forward-headers-strategy: framework
 
 management:
   endpoints:
     web:
       exposure:
         include: health,info
+  health:
+    # Notification delivery is deliberately non-fatal: a failed send is recorded on the row and never
+    # propagated, because a broken mail server must not undo a legitimate queue movement. Health has
+    # to agree. Left on, an unreachable SMTP host would report the instance DOWN and let the load
+    # balancer deregister a fleet that is serving queues perfectly well.
+    mail:
+      enabled: false
   endpoint:
     health:
       probes:
         enabled: true
+      show-details: never
+      group:
+        # What the load balancer polls. Includes the database on purpose: an instance that cannot
+        # reach the database cannot serve, and should be taken out of rotation rather than return
+        # errors. Instance replacement is driven by EC2 status checks, not by this, so a database
+        # blip degrades the service instead of destroying the fleet.
+        readiness:
+          include: readinessState,db
+        # What proves the process itself is alive. Deliberately excludes the database.
+        liveness:
+          include: livenessState
 
 springdoc:
   swagger-ui:

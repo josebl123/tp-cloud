@@ -1,0 +1,50 @@
+# Production profile.
+#
+# Every value that differs between environments comes from the environment, and the ones that must
+# never have a default have none - a missing DB_URL or JWT_SECRET fails at startup, loudly, instead
+# of silently running on a development value.
+#
+# On EC2 these are written into the systemd unit's environment file by user-data, which reads them
+# from SSM Parameter Store. The application itself has no AWS dependency and no AWS SDK.
+
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  jpa:
+    # The schema is owned by Flyway; validate catches drift at startup rather than at runtime.
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    # Safe to run on every instance: Flyway takes a PostgreSQL advisory lock, so instances starting
+    # at the same time serialise rather than racing.
+    enabled: true
+
+q:
+  # The CloudFront domain. QR codes and ticket links are built on it, so it must be the address a
+  # customer's phone can actually reach - never an internal load balancer name.
+  public-base-url: ${PUBLIC_BASE_URL}
+  # Same origin as the SPA when both are served by one distribution, which makes CORS a no-op.
+  cors-allowed-origins: ${CORS_ORIGINS:${PUBLIC_BASE_URL}}
+  jwt:
+    # Must be identical across instances, or a token issued by one is rejected by another.
+    secret: ${JWT_SECRET}
+    ttl: ${JWT_TTL:12h}
+  realtime:
+    # LISTEN/NOTIFY, so a change made on one instance reaches streams held by any other.
+    mode: POSTGRES
+  notifications:
+    email:
+      enabled: ${NOTIFY_EMAIL_ENABLED:false}
+      from: ${NOTIFY_EMAIL_FROM:no-reply@q.local}
+  seed:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    ar.edu.itba.cloud.queue: INFO
+  pattern:
+    # The instance id in every line is what makes a merged CloudWatch log stream readable.
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [${INSTANCE_ID:-unknown}] [%thread] %logger{36} - %msg%n"

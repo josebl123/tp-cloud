@@ -9,6 +9,7 @@ import ar.edu.itba.cloud.queue.service.model.QueueSnapshot;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.UUID;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -39,7 +40,10 @@ public class QueueStreamController {
                     The browser `EventSource` API cannot set an Authorization header, so this endpoint
                     also accepts the token as `?access_token=...`.
                     """)
-    public SseEmitter stream(@CurrentUser AuthenticatedUser user, @PathVariable UUID queueId) {
+    public SseEmitter stream(@CurrentUser AuthenticatedUser user,
+                             @PathVariable UUID queueId,
+                             HttpServletResponse response) {
+        Streams.prepare(response);
         // Reading the board first is also the authorisation check: a non-member never gets an emitter.
         QueueSnapshot snapshot = queueService.getSnapshot(user.id(), queueId);
         SseEmitter emitter = sseHub.subscribeStaff(queueId);

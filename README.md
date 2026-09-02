@@ -135,6 +135,22 @@ Everything is overridable by environment variable; defaults suit local developme
 | `q.notifications.email.enabled` | `NOTIFY_EMAIL_ENABLED` | `false` (`true` in `dev`) | When off, notifications go to the logging transport. |
 | `spring.datasource.url` | `DB_URL` | `jdbc:postgresql://localhost:55432/qdb` | |
 
+### Running the `prod` profile
+
+`--spring.profiles.active=prod` makes the settings below **mandatory** — it will not start without
+them, on purpose.
+
+| Variable | Purpose |
+|---|---|
+| `DB_URL`, `DB_USER`, `DB_PASSWORD` | RDS endpoint and credentials |
+| `JWT_SECRET` | At least 32 bytes, and **identical on every instance** or tokens issued by one are rejected by another |
+| `PUBLIC_BASE_URL` | The CloudFront domain. QR codes and ticket links are built on it, so it must be an address a customer's phone can reach — never an internal load balancer name |
+| `INSTANCE_ID` | Written into every log line and returned as `X-Instance-Id`. Set from EC2 instance metadata at boot |
+| `NOTIFY_EMAIL_ENABLED` | `false` by default; notifications fall back to the logging transport |
+
+Health endpoints for a load balancer target group: **`/actuator/health/readiness`** (includes the
+database) and `/actuator/health/liveness` (process only).
+
 ## Design notes worth knowing
 
 * **Positions are derived, never stored.** The `WAITING` list sorted by a sparse order key *is* the

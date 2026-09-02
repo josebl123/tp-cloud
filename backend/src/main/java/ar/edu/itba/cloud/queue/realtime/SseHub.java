@@ -9,6 +9,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -84,6 +86,39 @@ public class SseHub {
         } catch (IOException | IllegalStateException ex) {
             log.debug("Could not deliver initial SSE payload: {}", ex.getMessage());
             emitter.completeWithError(ex);
+        }
+    }
+
+    /** How many connections this instance is currently holding. Surfaced on the info endpoint. */
+    public int openConnections() {
+        int staff = staffSubscribers.values().stream().mapToInt(Set::size).sum();
+        int tickets = ticketSubscribers.values().stream()
+                .flatMap(byTicket -> byTicket.values().stream())
+                .mapToInt(Set::size)
+                .sum();
+        return staff + tickets;
+    }
+
+    /**
+     * Closes every stream when the application is shutting down.
+     *
+     * <p>Matters on an Auto Scaling Group: when an instance is being terminated its clients should be
+     * released immediately so they reconnect through the load balancer to a surviving instance,
+     * rather than sitting on a dead connection until their own timeout expires. Runs on
+     * {@link ContextClosedEvent}, which fires before the graceful-shutdown wait, so these long-lived
+     * requests do not hold that wait open for its full duration either.
+     */
+    @EventListener(ContextClosedEvent.class)
+    public void releaseAll() {
+        int released = openConnections();
+        staffSubscribers.values().forEach(emitters -> emitters.forEach(SseEmitter::complete));
+        ticketSubscribers.values()
+                .forEach(byTicket -> byTicket.values()
+                        .forEach(emitters -> emitters.forEach(SseEmitter::complete)));
+        staffSubscribers.clear();
+        ticketSubscribers.clear();
+        if (released > 0) {
+            log.info("Released {} live connections for shutdown", released);
         }
     }
 

@@ -11,6 +11,7 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
 import java.util.UUID;
+import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -70,7 +71,8 @@ public class TicketController {
                     whenever the line moves. The current state is pushed immediately on connect, so a
                     client never needs a separate first fetch.
                     """)
-    public SseEmitter stream(@PathVariable UUID ticketToken) {
+    public SseEmitter stream(@PathVariable UUID ticketToken, HttpServletResponse response) {
+        Streams.prepare(response);
         TicketView current = ticketService.get(ticketToken);
         SseEmitter emitter = sseHub.subscribeTicket(current.queue().id(), ticketToken);
         sseHub.sendInitial(emitter, RealtimeBroadcaster.TICKET_EVENT, current);

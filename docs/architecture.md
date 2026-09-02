@@ -736,7 +736,29 @@ architecture should scale with load and cost nothing when idle. The split above 
 * **The database is the only stateful component**, and the per-queue row lock means concurrency
   correctness does not degrade as replicas are added.
 
-### 14.3 Running more than one instance
+### 14.3 What makes the application deployable
+
+The code carries no AWS SDK and no AWS-specific class. What it does carry is the behaviour a managed
+environment expects from anything it is going to start, stop and replace on its own.
+
+| Concern | What the application does | Why it matters on EC2 behind an ALB |
+|---|---|---|
+| **Configuration** | Everything environment-driven; `prod` gives `DB_URL`, `DB_PASSWORD` and `JWT_SECRET` no defaults at all | A missing secret fails at startup with a named placeholder, rather than silently running on a development value. Verified: the `prod` profile with no environment exits non-zero. |
+| **Graceful shutdown** | `server.shutdown: graceful`, and live streams are closed on `ContextClosedEvent` — *before* the shutdown wait begins | A terminating instance releases its SSE clients immediately so they reconnect through the load balancer, instead of holding them for the full 25-second window. Measured: shutdown completed in 6 ms, not 25 s. |
+| **Health, split two ways** | `/actuator/health/liveness` (process only) and `/actuator/health/readiness` (includes the database) | The load balancer polls readiness, so an instance that cannot reach RDS is taken out of rotation instead of returning errors. Instance *replacement* is driven by EC2 status checks, so a database blip degrades the service rather than destroying the fleet. |
+| **Mail excluded from health** | `management.health.mail.enabled: false` | Found by a failing test. The default indicator made the whole instance report DOWN when SMTP was unreachable — which would have let the load balancer deregister a fleet that was serving queues perfectly. It also contradicted the application's own rule that a failed notification never undoes a queue movement. |
+| **Proxy awareness** | `forward-headers-strategy: framework` | Two proxies sit in front (CDN, load balancer). Without this the application believes every request arrived over plain HTTP from the load balancer's own address. |
+| **Streams survive the CDN** | `Cache-Control: no-cache, no-store, no-transform` and `X-Accel-Buffering: no` on both SSE endpoints | An event stream is a response that is deliberately never finished — exactly what an intermediary likes to buffer. Either proxy holding bytes back would turn live updates into nothing at all. |
+| **Instance identity** | `X-Instance-Id` on every response, the id in every log line, and on `/actuator/info` | Makes "which instance answered?" answerable — in merged CloudWatch logs, and in the live demo where the load balancer's distribution has to be shown rather than asserted. |
+| **Connection budget** | Hikari capped at 10, plus one connection per instance for LISTEN/NOTIFY, recycled below typical idle timeouts | A `db.t3.micro` allows on the order of a hundred connections; the fleet must fit inside that with room to spare. |
+| **Concurrent migrations** | Flyway on every instance | Safe by design: Flyway takes a PostgreSQL advisory lock, so instances starting together serialise instead of racing. |
+
+**Deliberately not done:** no AWS SDK, no `spring-cloud-aws`, no Parameter Store client in the
+application. Secrets are read from SSM by EC2 user-data at boot and written into the systemd unit's
+environment file. The application stays a plain twelve-factor process that runs identically on a
+laptop, and nothing about it needs AWS permissions to start.
+
+### 14.4 Running more than one instance
 
 Horizontal scaling works today. The cross-instance blocker — SSE fan-out — is solved by
 LISTEN/NOTIFY (§9.3), verified by running two instances against one database: a customer streaming
