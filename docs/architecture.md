@@ -523,6 +523,42 @@ writer endpoint.
 
 A 20-second heartbeat comment keeps idle connections alive through intermediaries.
 
+### 9.4 The cost of a fan-out, measured
+
+A queue movement has to reach the staff board and every customer watching their own ticket. The
+obvious implementation loops over subscribers and rebuilds each view independently — and that was the
+first implementation here. Measured on a real queue of 23 people, counting the SQL statements caused
+by a single "call next":
+
+| Watchers | Statements — naive | Statements — current |
+|---|---|---|
+| 0 | 15 | 15 |
+| 2 | 23 | 20 |
+| 4 | 29 | 20 |
+| 8 | 40 | 19 |
+| 12 | **66** | **19** |
+
+The naive shape fits `≈ 14 + 4 × watchers`. Four queries per subscriber, of which **three returned
+identical results for every one of them** — the queue's average service time, how many people are
+being served, and the waiting list are facts about the queue, not about the watcher.
+
+So database load grew with the size of the audience rather than with the amount of work being done.
+Forty people watching one queue meant roughly forty times the queries for the same information.
+
+`QueueService.readBroadcast` assembles the whole fan-out in one pass instead. The queue, its line and
+its average service time are read once; every customer's view is derived from that. A second saving
+follows from the first: **a watcher still in the line is already among the entries loaded for the
+board**, so their view costs no query at all. Only watchers whose entry has just left need fetching,
+and those go in a single batched statement.
+
+The result is flat — twelve watchers cost what one does, and the residual variation is the SSE
+subscription itself, not the broadcast. Extrapolated to a forty-person queue that is roughly 175
+statements per movement reduced to about 20.
+
+This is worth stating plainly in a document about cloud architecture: the fix was in the application,
+not the infrastructure. A larger database instance would have bought the same headroom for money,
+permanently, and left the amplification in place.
+
 ---
 
 ## 10. Security model
@@ -796,6 +832,7 @@ Neither touches business logic, which is the point of having isolated them behin
 | 12 | Clean paths for customer URLs only | Query strings everywhere | Only two URLs are ever printed or shared; staff URLs are not | Hosting config stays at exactly two rules |
 | 13 | Read models reused as responses | A second DTO layer | The entity boundary is already enforced; a mirror record would only drift | Documented as intentional |
 | 14 | Real PostgreSQL in tests | H2 in-memory | Locks, CHECK constraints and migrations are the parts worth testing | Docker required to run the suite |
+| 14b | Multi-AZ RDS, single writer, no read replicas | Single-AZ; read replicas; Aurora | Multi-AZ is bought for *maintenance*, not disasters: on single-AZ, AWS patching is downtime, and demand here is spiky and synchronised across every establishment. Replicas were rejected on product grounds, not cost — replication is asynchronous and Q displays a live position, so a stale read is a visible correctness bug, not a slow one | Doubles the database cost and adds minutes to stack creation; buys availability and no extra capacity |
 | 15 | Injected `Clock` everywhere | `Instant.now()` | Makes grace periods, metrics windows and token expiry testable without sleeping | Includes JWT validation |
 | 16 | English throughout | Spanish UI with English code | One language across code, API and interface avoids a translation seam mid-stack | Notification copy is English |
 

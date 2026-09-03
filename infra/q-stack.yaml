@@ -1,0 +1,814 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Q (Queue) - ITBA 82.08 Cloud Computing, Grupo 9.
+  Three-tier VPC across two Availability Zones: an internet-facing load balancer in public subnets,
+  an Auto Scaling Group of application instances in private subnets, and PostgreSQL in isolated
+  database subnets with no route to the internet at all. The single-page app is served from S3
+  through CloudFront, which also fronts /api/* so the whole product is one HTTPS origin.
+
+  Written for the AWS Academy Learner Lab: it creates no IAM roles and reuses the provided
+  LabInstanceProfile, because that environment does not permit creating them.
+
+# ---------------------------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------------------------
+Parameters:
+
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: >
+      Amazon Linux 2023 AMI (x86_64) for this region. Deliberately not looked up automatically:
+      the usual trick uses an SSM public parameter, and Systems Manager is out of scope here.
+      Find it in the console under EC2 > Launch instance > Amazon Linux 2023, or with
+      "aws ec2 describe-images --owners amazon --filters Name=name,Values=al2023-ami-2023.*-x86_64".
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+    Description: >
+      Application instance size. t3.small gives the JVM comfortable headroom; t3.micro works if the
+      heap is capped, at roughly half the cost.
+
+  DbUsername:
+    Type: String
+    Default: qadmin
+    MinLength: 4
+    MaxLength: 32
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9_]*'
+    Description: Master username for the PostgreSQL instance.
+
+  DbPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 12
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z0-9!#$%^&*()_+=-]*'
+    Description: >
+      Master password. NoEcho keeps it out of the console, the events log and describe-stack output.
+      It still reaches the instances, which is why the application reads it from a private S3 object
+      rather than from the launch template.
+
+  DbEngineVersion:
+    Type: String
+    Default: '16.4'
+    Description: PostgreSQL engine version. Check availability in the target region before deploying.
+
+  EnableScheduledScaling:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Adds scheduled capacity changes for the lunch and dinner peaks the proposal describes. Left off
+      by default so a demo stack cannot quietly double its instance count and its cost.
+
+Conditions:
+  ScheduledScalingEnabled: !Equals [!Ref EnableScheduledScaling, 'true']
+
+Mappings:
+  # CloudFront managed policies, referenced by their well-known ids.
+  CloudFrontPolicies:
+    Caching:
+      Optimized: 658327ea-f89d-4fab-a63d-7e88639e58f6
+      Disabled: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+    OriginRequest:
+      AllViewerExceptHostHeader: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+Resources:
+
+  # =============================================================================================
+  # NETWORK
+  #
+  # Six subnets: three tiers across two Availability Zones. The tiers exist because each one has a
+  # different answer to "who may reach this?", and two AZs because a single one is a single point of
+  # failure - and because RDS requires a subnet group spanning two regardless.
+  # =============================================================================================
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: q-vpc }]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{ Key: Name, Value: q-igw }]
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # --- Public tier: only what must be reachable from the internet ---------------------------------
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: q-public-a }]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags: [{ Key: Name, Value: q-public-b }]
+
+  # --- Application tier: reachable only from the load balancer ------------------------------------
+
+  AppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: q-app-a }]
+
+  AppSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: q-app-b }]
+
+  # --- Database tier: no route to the internet, in either direction --------------------------------
+
+  DbSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.20.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: q-db-a }]
+
+  DbSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.21.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags: [{ Key: Name, Value: q-db-b }]
+
+  # --- Outbound path for the private tier ---------------------------------------------------------
+  #
+  # One NAT Gateway, not two. Two would survive an AZ failure; at roughly $32/month each that is not
+  # defensible on a $50 budget. The consequence is explicit: if AZ-a fails, instances in AZ-b lose
+  # outbound internet access, though they keep serving traffic.
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags: [{ Key: Name, Value: q-nat-eip }]
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags: [{ Key: Name, Value: q-nat }]
+
+  # --- Route tables -------------------------------------------------------------------------------
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: q-rt-public }]
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable }
+
+  PublicSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable }
+
+  AppRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: q-rt-app }]
+
+  # Outbound only. Nothing on the internet can initiate a connection back through a NAT Gateway.
+  AppDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref AppRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  AppSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref AppSubnetA, RouteTableId: !Ref AppRouteTable }
+
+  AppSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref AppSubnetB, RouteTableId: !Ref AppRouteTable }
+
+  # The database route table has no 0.0.0.0/0 entry of any kind. Local VPC traffic only. This is the
+  # first of the two layers that make the database unreachable from the internet, and it is the one
+  # the live demo shows: there is no path, not merely a closed door.
+  DbRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: q-rt-db-isolated }]
+
+  DbSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref DbSubnetA, RouteTableId: !Ref DbRouteTable }
+
+  DbSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: { SubnetId: !Ref DbSubnetB, RouteTableId: !Ref DbRouteTable }
+
+  # Instances fetch the jar and their configuration from S3 over this endpoint, so that traffic never
+  # leaves the AWS network and never passes through - or is billed by - the NAT Gateway.
+  # Gateway endpoints cost nothing.
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref AppRouteTable, !Ref PublicRouteTable]
+
+  # =============================================================================================
+  # NETWORK ACLs
+  #
+  # A second, independent layer in front of the database subnets. Security groups are stateful and
+  # attach to instances; NACLs are stateless and evaluate at the subnet boundary. Having both means
+  # a mistake in one is still caught by the other - which is the only honest reason to run both.
+  # Being stateless, each direction has to be allowed explicitly.
+  # =============================================================================================
+
+  DbNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref Vpc
+      Tags: [{ Key: Name, Value: q-nacl-db }]
+
+  DbNaclInboundFromAppA:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref DbNetworkAcl
+      RuleNumber: 100
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 10.0.10.0/24
+      PortRange: { From: 5432, To: 5432 }
+
+  DbNaclInboundFromAppB:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref DbNetworkAcl
+      RuleNumber: 110
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 10.0.11.0/24
+      PortRange: { From: 5432, To: 5432 }
+
+  # Replies to anything the database itself initiates inside the VPC arrive on ephemeral ports.
+  # Scoped to the VPC, never the internet.
+  DbNaclInboundEphemeral:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref DbNetworkAcl
+      RuleNumber: 120
+      Protocol: 6
+      RuleAction: allow
+      CidrBlock: 10.0.0.0/16
+      PortRange: { From: 1024, To: 65535 }
+
+  # Egress is left open, deliberately, and it costs nothing in security: the database subnets' route
+  # table has no path off the VPC at all, so there is nowhere for outbound traffic to go. Tightening
+  # this instead risks interfering with the managed database's own traffic - and a stateless rule
+  # that is subtly too narrow shows up as a connection that opens and then hangs, which is a
+  # miserable thing to debug during a demonstration. The security value here is on the way in.
+  DbNaclOutbound:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref DbNetworkAcl
+      RuleNumber: 100
+      Protocol: -1
+      Egress: true
+      RuleAction: allow
+      CidrBlock: 0.0.0.0/0
+
+  DbSubnetANaclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: { SubnetId: !Ref DbSubnetA, NetworkAclId: !Ref DbNetworkAcl }
+
+  DbSubnetBNaclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties: { SubnetId: !Ref DbSubnetB, NetworkAclId: !Ref DbNetworkAcl }
+
+  # =============================================================================================
+  # SECURITY GROUPS
+  #
+  # A chain, not a set. Each tier names the group above it as its only source, rather than an address
+  # range - so the rules keep working when the Auto Scaling Group replaces an instance and the
+  # private address changes.
+  #
+  #   internet ──▶ ALB ──▶ application ──▶ database
+  # =============================================================================================
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public entry point. The only group reachable from the internet.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from CloudFront and anything else that finds the load balancer
+      Tags: [{ Key: Name, Value: q-sg-alb }]
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Application instances. Not reachable from the internet.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: Application traffic, only from the load balancer
+      Tags: [{ Key: Name, Value: q-sg-app }]
+
+  # Note what is absent: nothing else is a source. Only the application security group appears here,
+  # so being inside the VPC is not by itself enough to reach the database.
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL. Reachable only from the application instances.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+          Description: PostgreSQL, only from the application security group
+      Tags: [{ Key: Name, Value: q-sg-db }]
+
+  # =============================================================================================
+  # STORAGE
+  #
+  # Two buckets with deliberately different access postures. Never put configuration in a bucket that
+  # a CDN serves to the public.
+  # =============================================================================================
+
+  # Served to the world through CloudFront, but only through CloudFront.
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub q-web-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      Tags: [{ Key: Name, Value: q-web }]
+
+  # Private. Holds the application jar and app.env, read by the instances over the S3 Gateway
+  # Endpoint. Keeping secrets here rather than in user-data means they never appear in the launch
+  # template, the CloudFormation stack, or the EC2 console.
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub q-artifacts-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      Tags: [{ Key: Name, Value: q-artifacts }]
+
+  # =============================================================================================
+  # DATABASE
+  #
+  # PostgreSQL rather than a key-value store, because this application needs ordered range queries
+  # for queue position, row-level locking for correctness when two staff act at once, aggregation for
+  # metrics, and LISTEN/NOTIFY to carry live updates between instances. The database is not only
+  # storage here; it is also the coordination mechanism.
+  # =============================================================================================
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Isolated database subnets, one per Availability Zone
+      SubnetIds: [!Ref DbSubnetA, !Ref DbSubnetB]
+      Tags: [{ Key: Name, Value: q-db-subnets }]
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub ${AWS::StackName}-db
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: '20'
+      StorageType: gp2
+      StorageEncrypted: true
+      DBName: qdb
+      MasterUsername: !Ref DbUsername
+      MasterUserPassword: !Ref DbPassword
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      # The second of the two isolation layers. Even if a route to the internet existed, RDS would
+      # not answer on a public address.
+      PubliclyAccessible: false
+      # A synchronous standby in the second Availability Zone.
+      #
+      # The usual argument for this is "what if an AZ fails?", which is rare enough that people talk
+      # themselves out of paying for it. The better argument is routine maintenance: AWS patches RDS,
+      # and single-AZ means that patching is downtime. With a standby it happens off to the side and
+      # ends in a failover of about a minute, in a window you choose.
+      #
+      # That matters here because demand is spiky and synchronised - every establishment peaks at
+      # lunch and dinner together. A ten-minute outage at 20:30 on a Friday hits all of them at once,
+      # and the failure is uniquely bad for this product: an app whose promise is "you do not have to
+      # stand in line" turns into "we lost your place".
+      #
+      # The standby accepts no reads. It exists solely to take over, so this buys availability and
+      # not a single unit of extra capacity.
+      MultiAZ: true
+      # No automated backups: this is a teaching environment that gets rebuilt, and retention would
+      # only slow stack deletion down.
+      BackupRetentionPeriod: 0
+      DeletionProtection: false
+      Tags: [{ Key: Name, Value: q-database }]
+
+  # =============================================================================================
+  # LOAD BALANCER
+  # =============================================================================================
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${AWS::StackName}-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags: [{ Key: Name, Value: q-alb }]
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AWS::StackName}-tg
+      VpcId: !Ref Vpc
+      Port: 8080
+      Protocol: HTTP
+      TargetType: instance
+      # Readiness, not liveness: it covers the database, so an instance that cannot reach RDS leaves
+      # rotation rather than serving errors.
+      HealthCheckPath: /actuator/health/readiness
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher: { HttpCode: '200' }
+      TargetGroupAttributes:
+        # Long enough for the application's own graceful shutdown to finish, short enough that a
+        # scale-in is not held open. The application closes its live streams first, so this rarely
+        # runs to the full delay.
+        - { Key: deregistration_delay.timeout_seconds, Value: '30' }
+      Tags: [{ Key: Name, Value: q-tg }]
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # =============================================================================================
+  # APPLICATION INSTANCES
+  # =============================================================================================
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    # CloudFront supplies the public base URL that QR codes and ticket links are built on.
+    DependsOn: [Distribution, Database]
+    Properties:
+      LaunchTemplateName: !Sub ${AWS::StackName}-app
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds: [!Ref AppSecurityGroup]
+        # The Learner Lab does not permit creating IAM roles, so the provided instance profile is
+        # reused. It is what lets an instance read its configuration from the artifacts bucket.
+        IamInstanceProfile: { Name: LabInstanceProfile }
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 8
+              VolumeType: gp3
+              DeleteOnTermination: true
+              Encrypted: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags: [{ Key: Name, Value: q-app }]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -uxo pipefail
+            exec > >(tee /var/log/q-bootstrap.log|logger -t q-bootstrap -s 2>/dev/console) 2>&1
+
+            # --- identity -------------------------------------------------------------------
+            # IMDSv2: fetch a token first. The application stamps this on every response and log
+            # line, which is how "which instance answered?" stays answerable behind a balancer.
+            TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+            IID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+
+            # --- runtime --------------------------------------------------------------------
+            dnf -y update
+            if ! dnf -y install java-25-amazon-corretto-headless; then
+              # Corretto 25 may not be in the repositories yet; fall back to Amazon's own download.
+              curl -Lo /tmp/corretto.tar.gz \
+                https://corretto.aws/downloads/latest/amazon-corretto-25-x64-linux-jdk.tar.gz
+              mkdir -p /opt/java
+              tar -xzf /tmp/corretto.tar.gz -C /opt/java --strip-components=1
+              ln -sf /opt/java/bin/java /usr/bin/java
+            fi
+
+            mkdir -p /opt/q /etc/q
+
+            # --- artifacts ------------------------------------------------------------------
+            # Poll rather than assume: the stack takes about fifteen minutes to build, so the jar
+            # and the secrets file may be uploaded while it is still creating. Traffic goes over the
+            # S3 Gateway Endpoint, so it never touches the NAT Gateway.
+            for attempt in $(seq 1 60); do
+              if aws s3 cp s3://${ArtifactsBucket}/app.env /etc/q/secrets.env --region ${AWS::Region} \
+                 && aws s3 cp s3://${ArtifactsBucket}/queue-api.jar /opt/q/app.jar --region ${AWS::Region}; then
+                echo "artifacts retrieved on attempt $attempt"
+                break
+              fi
+              echo "artifacts not ready (attempt $attempt), waiting"
+              sleep 15
+            done
+
+            # --- configuration ---------------------------------------------------------------
+            # Secrets come from the private bucket. Everything else is generated by this stack and
+            # is not sensitive, so it is composed here.
+            {
+              cat /etc/q/secrets.env
+              echo "SPRING_PROFILES_ACTIVE=prod"
+              echo "DB_URL=jdbc:postgresql://${Database.Endpoint.Address}:${Database.Endpoint.Port}/qdb"
+              echo "DB_USER=${DbUsername}"
+              echo "PUBLIC_BASE_URL=https://${Distribution.DomainName}"
+              echo "INSTANCE_ID=$IID"
+            } > /etc/q/app.env
+            chmod 600 /etc/q/app.env
+            chmod 644 /opt/q/app.jar
+
+            # --- service ---------------------------------------------------------------------
+            cat > /etc/systemd/system/q-api.service <<'UNIT'
+            [Unit]
+            Description=Q queue management API
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            User=ec2-user
+            EnvironmentFile=/etc/q/app.env
+            ExecStart=/usr/bin/java -XX:MaxRAMPercentage=70.0 -jar /opt/q/app.jar
+            Restart=always
+            RestartSec=10
+            KillSignal=SIGTERM
+            # Comfortably above the application's own 25 second graceful shutdown budget, so systemd
+            # never kills it mid-drain.
+            TimeoutStopSec=40
+
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+
+            systemctl daemon-reload
+            systemctl enable --now q-api
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub ${AWS::StackName}-asg
+      VPCZoneIdentifier: [!Ref AppSubnetA, !Ref AppSubnetB]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: '2'
+      MaxSize: '4'
+      DesiredCapacity: '2'
+      TargetGroupARNs: [!Ref TargetGroup]
+      # EC2 status checks, deliberately not ELB health checks. The target group's health check
+      # includes the database; if it drove replacement, a database outage would terminate every
+      # instance and their replacements would fail the same check, turning a recoverable problem
+      # into an endless replacement loop. This way a database blip degrades the service instead.
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      Tags:
+        - { Key: Name, Value: q-app, PropagateAtLaunch: true }
+
+  # Capacity for the lunch and dinner peaks the proposal describes. Scheduled rather than reactive:
+  # metric-driven scaling needs CloudWatch, and these peaks are known in advance anyway - capacity
+  # arrives before the rush rather than three minutes into it.
+  ScaleOutForPeak:
+    Type: AWS::AutoScaling::ScheduledAction
+    Condition: ScheduledScalingEnabled
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Recurrence: '45 11 * * *'
+      TimeZone: America/Argentina/Buenos_Aires
+      MinSize: 2
+      MaxSize: 4
+      DesiredCapacity: 4
+
+  ScaleInAfterPeak:
+    Type: AWS::AutoScaling::ScheduledAction
+    Condition: ScheduledScalingEnabled
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Recurrence: '30 15 * * *'
+      TimeZone: America/Argentina/Buenos_Aires
+      MinSize: 2
+      MaxSize: 4
+      DesiredCapacity: 2
+
+  # =============================================================================================
+  # CONTENT DELIVERY
+  #
+  # One distribution, two origins. The single-page app comes from S3; anything under /api/* goes to
+  # the load balancer. That makes the whole product one HTTPS origin, which removes three problems at
+  # once: no certificate or domain to buy, no CORS between the app and its API, and no mixed content
+  # when an HTTPS page calls its backend.
+  # =============================================================================================
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-oac
+        Description: Lets this distribution, and only this distribution, read the web bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # The exported site is a set of directories containing index.html, and two of its routes are single
+  # shells that read an id from the address bar. Reading straight from S3 there is no notion of an
+  # index document, so /login/ and /q/<queueId> would both return NoSuchKey. This rewrites the path
+  # before the request reaches the bucket.
+  SpaRouterFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub ${AWS::StackName}-spa-router
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Maps clean URLs onto the exported static files
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri;
+
+          // The two public routes are single shells; the id after the prefix is read client-side.
+          if (uri.startsWith('/q/')) { request.uri = '/q/index.html'; return request; }
+          if (uri.startsWith('/t/')) { request.uri = '/t/index.html'; return request; }
+
+          // Directory-style paths map onto their index document.
+          if (uri.endsWith('/')) { request.uri = uri + 'index.html'; return request; }
+
+          // Anything without a file extension is a route, not an asset.
+          if (!uri.includes('.')) { request.uri = uri + '/index.html'; return request; }
+
+          return request;
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub ${AWS::StackName} - single origin for the app and its API
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        # North America and Europe. The cheapest class, and enough for a demonstration.
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: web
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: api
+            DomainName: !GetAtt LoadBalancer.DNSName
+            CustomOriginConfig:
+              OriginProtocolPolicy: http-only
+              HTTPPort: 80
+              # Server-Sent Events hold a response open indefinitely. The application sends a
+              # heartbeat every twenty seconds, so this only has to exceed that.
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 60
+        DefaultCacheBehavior:
+          TargetOriginId: web
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: !FindInMap [CloudFrontPolicies, Caching, Optimized]
+          Compress: true
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt SpaRouterFunction.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            # Caching disabled, or a queue's live state would be served stale - and an event stream
+            # would never be forwarded at all.
+            CachePolicyId: !FindInMap [CloudFrontPolicies, Caching, Disabled]
+            OriginRequestPolicyId: !FindInMap [CloudFrontPolicies, OriginRequest, AllViewerExceptHostHeader]
+            Compress: false
+
+  # The bucket itself stays entirely private; this grants read access to this distribution alone.
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${WebBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+# ---------------------------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------------------------
+Outputs:
+
+  ApplicationUrl:
+    Description: Open this. The staff panel and every customer QR code live here.
+    Value: !Sub https://${Distribution.DomainName}
+
+  WebBucketName:
+    Description: Upload the frontend build here - "aws s3 sync frontend/out s3://<this>/"
+    Value: !Ref WebBucket
+
+  ArtifactsBucketName:
+    Description: Upload queue-api.jar and app.env here before or during stack creation
+    Value: !Ref ArtifactsBucket
+
+  DatabaseEndpoint:
+    Description: >
+      Private address of the database. Proving this is unreachable from the internet is the
+      isolation demonstration.
+    Value: !GetAtt Database.Endpoint.Address
+
+  LoadBalancerDns:
+    Description: Direct load balancer address, bypassing the CDN. Useful for isolating a problem.
+    Value: !GetAtt LoadBalancer.DNSName

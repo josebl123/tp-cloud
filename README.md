@@ -171,6 +171,10 @@ database) and `/actuator/health/liveness` (process only).
 | [docs/domain-model.md](docs/domain-model.md) | Entities, the entry state machine, grace policies, estimation and metrics definitions |
 | [docs/api-reference.md](docs/api-reference.md) | Every endpoint, error code and payload, plus the SSE contract |
 | [docs/frontend.md](docs/frontend.md) | Frontend implementation notes and the design language |
+| [docs/gotchas.md](docs/gotchas.md) | **Read before deploying or deleting anything.** Teardown traps, cost, local setup, and the decisions a cleanup would break |
+| [infra/README.md](infra/README.md) | Deployment runbook for AWS, and the demonstration script |
+| [infra/q-stack.yaml](infra/q-stack.yaml) | CloudFormation template — the whole environment, 50 resources |
+| [infra/q-architecture.drawio](infra/q-architecture.drawio) | Architecture diagram, editable in draw.io, official AWS icons |
 
 ## Toward the cloud deployment
 
