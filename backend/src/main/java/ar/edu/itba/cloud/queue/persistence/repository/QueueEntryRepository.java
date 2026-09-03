@@ -31,6 +31,21 @@ public interface QueueEntryRepository extends JpaRepository<QueueEntry, UUID> {
     Optional<QueueEntry> findByIdWithQueue(@Param("id") UUID id);
 
     /**
+     * Loads several tickets at once.
+     *
+     * <p>Used when broadcasting to the customers watching a queue: the ones still in the line are
+     * already in memory from the board, and this fetches whatever handful is left in a single
+     * statement rather than one per subscriber.
+     */
+    @Query("""
+            select e from QueueEntry e
+            join fetch e.queue q
+            join fetch q.establishment
+            where e.ticketToken in :tokens
+            """)
+    List<QueueEntry> findAllByTicketTokenIn(@Param("tokens") Collection<UUID> tokens);
+
+    /**
      * Resolves which queue an entry belongs to without loading it.
      *
      * <p>Used to take the queue lock <em>before</em> reading the entry, so the entry is never read in

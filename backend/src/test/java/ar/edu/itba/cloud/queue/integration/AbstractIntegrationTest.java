@@ -39,7 +39,9 @@ import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilde
         "q.jwt.secret=integration-test-secret-key-0123456789abcdef",
         "q.notifications.email.enabled=false",
         "q.seed.enabled=false",
-        "logging.level.org.hibernate.SQL=WARN"
+        "logging.level.org.hibernate.SQL=WARN",
+        // Lets a test count the statements an operation issues, rather than guess.
+        "spring.jpa.properties.hibernate.generate_statistics=true"
 })
 @AutoConfigureMockMvc
 @Import(TestSupportConfig.class)

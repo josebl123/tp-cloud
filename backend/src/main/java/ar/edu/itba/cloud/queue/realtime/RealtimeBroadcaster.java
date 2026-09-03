@@ -1,8 +1,9 @@
 package ar.edu.itba.cloud.queue.realtime;
 
 import ar.edu.itba.cloud.queue.service.QueueService;
-import ar.edu.itba.cloud.queue.service.TicketService;
+import ar.edu.itba.cloud.queue.service.model.QueueBroadcast;
 import ar.edu.itba.cloud.queue.service.event.QueueChangedEvent;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,12 +29,10 @@ public class RealtimeBroadcaster {
 
     private final SseHub hub;
     private final QueueService queueService;
-    private final TicketService ticketService;
 
-    public RealtimeBroadcaster(SseHub hub, QueueService queueService, TicketService ticketService) {
+    public RealtimeBroadcaster(SseHub hub, QueueService queueService) {
         this.hub = hub;
         this.queueService = queueService;
-        this.ticketService = ticketService;
     }
 
     /** Entry point for the single-instance transport, which delivers after commit. */
@@ -58,20 +57,28 @@ public class RealtimeBroadcaster {
     }
 
     private void push(UUID queueId) {
-        if (hub.hasStaffSubscribers(queueId)) {
-            try {
-                hub.sendToStaff(queueId, QUEUE_EVENT, queueService.readSnapshot(queueId));
-            } catch (Exception ex) {
-                log.debug("Could not broadcast board for queue {}: {}", queueId, ex.getMessage());
-            }
+        boolean staffWatching = hub.hasStaffSubscribers(queueId);
+        Set<UUID> ticketTokens = hub.subscribedTickets(queueId);
+
+        // Most instances hold no connection for most queues. Returning here costs nothing - with
+        // delayed connection acquisition, a read-only transaction that issues no query never takes
+        // one from the pool.
+        if (!staffWatching && ticketTokens.isEmpty()) {
+            return;
         }
 
-        for (UUID ticketToken : hub.subscribedTickets(queueId)) {
-            try {
-                hub.sendToTicket(queueId, ticketToken, TICKET_EVENT, ticketService.read(ticketToken));
-            } catch (Exception ex) {
-                log.debug("Could not broadcast ticket {}: {}", ticketToken, ex.getMessage());
-            }
+        QueueBroadcast payload;
+        try {
+            payload = queueService.readBroadcast(queueId, ticketTokens, staffWatching);
+        } catch (Exception ex) {
+            log.debug("Could not assemble broadcast for queue {}: {}", queueId, ex.getMessage());
+            return;
         }
+
+        if (payload.snapshot() != null) {
+            hub.sendToStaff(queueId, QUEUE_EVENT, payload.snapshot());
+        }
+        payload.tickets().forEach(
+                (token, view) -> hub.sendToTicket(queueId, token, TICKET_EVENT, view));
     }
 }

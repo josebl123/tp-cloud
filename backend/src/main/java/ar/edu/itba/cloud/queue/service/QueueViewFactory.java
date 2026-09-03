@@ -67,7 +67,18 @@ public class QueueViewFactory {
      * @param inService entries already called or being attended
      */
     public QueueSnapshot snapshot(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService) {
-        EstimationService.ServiceTimeEstimate estimate = estimationService.averageServiceTime(queue);
+        return snapshot(queue, waiting, inService, estimationService.averageServiceTime(queue));
+    }
+
+    /**
+     * Overload taking an estimate the caller has already measured.
+     *
+     * <p>Exists so a broadcast can measure the queue's average service time once and reuse it for the
+     * staff board and for every watching customer, rather than re-running the same query per
+     * subscriber.
+     */
+    public QueueSnapshot snapshot(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService,
+                                  EstimationService.ServiceTimeEstimate estimate) {
         int inServiceCount = inService.size();
 
         List<EntryView> waitingViews = new ArrayList<>(waiting.size());

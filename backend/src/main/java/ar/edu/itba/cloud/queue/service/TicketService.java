@@ -67,13 +67,6 @@ public class TicketService {
         return build(queue, entry);
     }
 
-    /** Pure read, used when pushing updates to subscribers after a change has already been applied. */
-    @Transactional(readOnly = true)
-    public TicketView read(UUID ticketToken) {
-        QueueEntry entry = entryRepository.findByTicketToken(ticketToken).orElseThrow(NotFoundException::ticket);
-        return build(entry.getQueue(), entry);
-    }
-
     /** Functionality 3: the customer's own notification history. */
     @Transactional(readOnly = true)
     public List<NotificationView> notifications(UUID ticketToken) {

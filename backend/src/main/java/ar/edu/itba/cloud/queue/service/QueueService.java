@@ -15,12 +15,17 @@ import ar.edu.itba.cloud.queue.persistence.repository.ServiceQueueRepository;
 import ar.edu.itba.cloud.queue.service.command.CreateQueueCommand;
 import ar.edu.itba.cloud.queue.service.command.UpdateQueueCommand;
 import ar.edu.itba.cloud.queue.service.model.PublicQueueView;
+import ar.edu.itba.cloud.queue.service.model.QueueBroadcast;
 import ar.edu.itba.cloud.queue.service.model.QueueEventView;
 import ar.edu.itba.cloud.queue.service.model.QueueSnapshot;
 import ar.edu.itba.cloud.queue.service.model.QueueView;
+import ar.edu.itba.cloud.queue.service.model.TicketView;
 import ar.edu.itba.cloud.queue.persistence.entity.ActorType;
 import java.time.Clock;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,6 +47,7 @@ public class QueueService {
     private final QueueEntryService entryService;
     private final GraceService graceService;
     private final QueueViewFactory viewFactory;
+    private final EstimationService estimationService;
     private final AccessGuard accessGuard;
     private final EventRecorder eventRecorder;
     private final RealtimeBus realtimeBus;
@@ -53,6 +59,7 @@ public class QueueService {
                         QueueEntryService entryService,
                         GraceService graceService,
                         QueueViewFactory viewFactory,
+                        EstimationService estimationService,
                         AccessGuard accessGuard,
                         EventRecorder eventRecorder,
                         RealtimeBus realtimeBus,
@@ -63,6 +70,7 @@ public class QueueService {
         this.entryService = entryService;
         this.graceService = graceService;
         this.viewFactory = viewFactory;
+        this.estimationService = estimationService;
         this.accessGuard = accessGuard;
         this.eventRecorder = eventRecorder;
         this.realtimeBus = realtimeBus;
@@ -172,6 +180,67 @@ public class QueueService {
     @Transactional(readOnly = true)
     public QueueSnapshot readSnapshot(UUID queueId) {
         return buildSnapshot(load(queueId));
+    }
+
+    /**
+     * Assembles everything a single queue change has to push out.
+     *
+     * <p>The naive shape of this is one set of queries per subscriber, every one of them asking the
+     * same questions about the same queue - so the database load grew with the number of people
+     * watching rather than with the amount of work being done. Here the queue, its line and its
+     * average service time are read <em>once</em>, and every customer's view is derived from that.
+     *
+     * <p>The second saving is subtler: anyone still in the line is already among the entries loaded
+     * for the board, so their view costs no query at all. Only watchers whose entry has just left the
+     * line need fetching, and those go in one batched statement.
+     *
+     * @param includeBoard whether any staff are connected; skips building a board nobody will see
+     */
+    @Transactional(readOnly = true)
+    public QueueBroadcast readBroadcast(UUID queueId, Set<UUID> ticketTokens, boolean includeBoard) {
+        ServiceQueue queue = load(queueId);
+        List<QueueEntry> waiting = entryRepository
+                .findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queueId, EntryStatus.WAITING);
+        List<QueueEntry> inService = entryRepository.findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(
+                queueId, List.of(EntryStatus.CALLED, EntryStatus.SERVING));
+        EstimationService.ServiceTimeEstimate estimate = estimationService.averageServiceTime(queue);
+
+        QueueSnapshot snapshot = includeBoard
+                ? viewFactory.snapshot(queue, waiting, inService, estimate)
+                : null;
+
+        if (ticketTokens.isEmpty()) {
+            return new QueueBroadcast(snapshot, Map.of());
+        }
+
+        Map<UUID, QueueEntry> byToken = new HashMap<>();
+        Map<UUID, Integer> peopleAheadByToken = new HashMap<>();
+        for (int index = 0; index < waiting.size(); index++) {
+            QueueEntry entry = waiting.get(index);
+            byToken.put(entry.getTicketToken(), entry);
+            peopleAheadByToken.put(entry.getTicketToken(), index);
+        }
+        for (QueueEntry entry : inService) {
+            byToken.put(entry.getTicketToken(), entry);
+        }
+
+        List<UUID> notInLine = ticketTokens.stream().filter(token -> !byToken.containsKey(token)).toList();
+        if (!notInLine.isEmpty()) {
+            entryRepository.findAllByTicketTokenIn(notInLine)
+                    .forEach(entry -> byToken.put(entry.getTicketToken(), entry));
+        }
+
+        Map<UUID, TicketView> tickets = new HashMap<>();
+        for (UUID token : ticketTokens) {
+            QueueEntry entry = byToken.get(token);
+            if (entry == null) {
+                // Removed since the subscription opened; that client falls back to polling.
+                continue;
+            }
+            tickets.put(token, viewFactory.ticketView(
+                    entry, peopleAheadByToken.get(token), inService.size(), estimate.duration()));
+        }
+        return new QueueBroadcast(snapshot, tickets);
     }
 
     /** What a customer sees right after scanning the QR. No authentication, no personal data. */
