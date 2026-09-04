@@ -1,5 +1,6 @@
 package ar.edu.itba.cloud.queue.config;
 
+import ar.edu.itba.cloud.queue.realtime.BroadcastCoordinator;
 import ar.edu.itba.cloud.queue.realtime.LocalRealtimeBus;
 import ar.edu.itba.cloud.queue.realtime.PostgresNotificationListener;
 import ar.edu.itba.cloud.queue.realtime.PostgresRealtimeBus;
@@ -35,15 +36,27 @@ public class RealtimeConfig {
         return new PostgresRealtimeBus(jdbcTemplate, properties.realtime().channel());
     }
 
+    /**
+     * Only created alongside the PostgreSQL transport. The in-JVM transport used by tests stays
+     * synchronous on purpose, so assertions do not have to wait for a window to elapse.
+     */
+    @Bean(destroyMethod = "close")
+    @ConditionalOnProperty(prefix = "q.realtime", name = "mode", havingValue = "POSTGRES",
+            matchIfMissing = true)
+    public BroadcastCoordinator broadcastCoordinator(RealtimeBroadcaster broadcaster,
+                                                     AppProperties properties) {
+        return new BroadcastCoordinator(broadcaster, properties.realtime().coalesceWindow());
+    }
+
     @Bean
     @ConditionalOnProperty(prefix = "q.realtime", name = "mode", havingValue = "POSTGRES",
             matchIfMissing = true)
-    public PostgresNotificationListener postgresNotificationListener(RealtimeBroadcaster broadcaster,
+    public PostgresNotificationListener postgresNotificationListener(BroadcastCoordinator coordinator,
                                                                      DataSourceProperties dataSource,
                                                                      AppProperties properties) {
         AppProperties.Realtime realtime = properties.realtime();
         return new PostgresNotificationListener(
-                broadcaster,
+                coordinator,
                 dataSource.determineUrl(),
                 dataSource.determineUsername(),
                 dataSource.determinePassword(),

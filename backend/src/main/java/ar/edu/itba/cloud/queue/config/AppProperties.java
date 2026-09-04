@@ -49,7 +49,12 @@ public record AppProperties(
             @DefaultValue("POSTGRES") Mode mode,
             @DefaultValue("queue_changed") String channel,
             @DefaultValue("5s") Duration pollTimeout,
-            @DefaultValue("5s") Duration reconnectDelay) {
+            @DefaultValue("5s") Duration reconnectDelay,
+            /**
+             * How long to gather changes to one queue before refreshing its subscribers. A burst of
+             * arrivals becomes a single push; the cost is this much added latency on an update.
+             */
+            @DefaultValue("200ms") Duration coalesceWindow) {
 
         public enum Mode {
             LOCAL,

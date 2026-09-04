@@ -559,6 +559,40 @@ This is worth stating plainly in a document about cloud architecture: the fix wa
 not the infrastructure. A larger database instance would have bought the same headroom for money,
 permanently, and left the amplification in place.
 
+### 9.5 Scheduling refreshes: one thread must not do the work
+
+Receiving a notification and acting on it are different jobs, and they were originally the same
+thread. That thread's real responsibility is to keep reading the database connection. When it also
+rebuilt queues and wrote to sockets, two problems followed:
+
+* **Queues became coupled.** Twenty queues changing at once were refreshed one after another, so a
+  slow one delayed every other queue on that instance.
+* **One bad client could stop everything.** `SseEmitter.send` writes to a socket and blocks if the
+  client's receive window is full. A single customer on a poor connection would stall updates for
+  every queue the instance was serving.
+
+`BroadcastCoordinator` separates the two. The listener decodes the notification and hands off; the
+refresh runs on a **virtual thread**, where a blocked write parks cheaply instead of holding a
+scarce resource. A stalled queue now stalls only itself — there is a test that asserts exactly that.
+
+**Running refreshes in parallel then requires ordering to be re-established**, or two refreshes of
+the same queue could overlap and publish an older view after a newer one. The coordinator keeps at
+most one refresh per queue in flight; anything arriving meanwhile only marks the queue dirty, and one
+follow-up runs when the current refresh finishes. That single rule delivers ordering *and*
+coalescing, which is why there is no revision counter on the payload: with per-queue serialisation an
+older view cannot be published after a newer one, so a counter would guard a race that cannot happen.
+
+In front of that sits a short window — `q.realtime.coalesce-window`, 200 ms by default — so a burst
+of arrivals becomes one push rather than one per arrival. This is safe **because a refresh reads
+current state rather than replaying an event**: one refresh after ten changes carries the same answer
+as ten would have, sent once. The cost is 200 ms of added latency on an update, which is invisible
+next to the human timescale of a queue.
+
+**Honest scope.** At restaurant pace this changes almost nothing — staff act every few seconds, and
+each action already produced one refresh. It earns its place in bursts, chiefly a QR code being
+scanned by many people at once, and in removing the head-of-line blocking above, which was a risk at
+any load rather than only under pressure.
+
 ---
 
 ## 10. Security model

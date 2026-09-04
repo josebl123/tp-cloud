@@ -24,6 +24,10 @@ import org.springframework.context.SmartLifecycle;
  * indefinitely, so borrowing from the HikariCP pool would permanently remove a connection from it.
  * This opens one dedicated connection per instance, outside the pool.
  *
+ * <p><strong>The work happens elsewhere.</strong> This thread decodes and hands off to
+ * {@link BroadcastCoordinator}, which decides when to refresh and keeps one refresh per queue in
+ * flight. Doing the refresh here would serialise every queue on the instance behind every other.
+ *
  * <p><strong>Missing a notification is survivable.</strong> Delivery is at-most-once: an instance
  * that is reconnecting hears nothing during the gap. That is acceptable precisely because the
  * payload carries no state — only a queue id — and the client already falls back to polling whenever
@@ -36,7 +40,7 @@ public class PostgresNotificationListener implements SmartLifecycle {
     /** A channel name goes into SQL as an identifier, so keep it to something unmistakably safe. */
     private static final Pattern SAFE_CHANNEL = Pattern.compile("[a-z_][a-z0-9_]{0,62}");
 
-    private final RealtimeBroadcaster broadcaster;
+    private final BroadcastCoordinator coordinator;
     private final String jdbcUrl;
     private final String username;
     private final String password;
@@ -47,7 +51,7 @@ public class PostgresNotificationListener implements SmartLifecycle {
     private volatile boolean running;
     private volatile Thread worker;
 
-    public PostgresNotificationListener(RealtimeBroadcaster broadcaster,
+    public PostgresNotificationListener(BroadcastCoordinator coordinator,
                                         String jdbcUrl,
                                         String username,
                                         String password,
@@ -57,7 +61,7 @@ public class PostgresNotificationListener implements SmartLifecycle {
         if (!SAFE_CHANNEL.matcher(channel).matches()) {
             throw new IllegalArgumentException("Unsafe notification channel name: " + channel);
         }
-        this.broadcaster = broadcaster;
+        this.coordinator = coordinator;
         this.jdbcUrl = jdbcUrl;
         this.username = username;
         this.password = password;
@@ -131,18 +135,19 @@ public class PostgresNotificationListener implements SmartLifecycle {
         }
     }
 
+    /**
+     * Decodes the notification and hands it on. Deliberately does no work of its own: this thread's
+     * only job is to keep reading the connection, and anything slow here would stall every queue on
+     * the instance, not just this one.
+     */
     private void handle(PGNotification notification) {
         try {
-            UUID queueId = UUID.fromString(notification.getParameter());
-            // Cheap guard: most instances hold no connection for most queues.
-            if (broadcaster.hasSubscribers(queueId)) {
-                broadcaster.broadcast(queueId);
-            }
+            coordinator.request(UUID.fromString(notification.getParameter()));
         } catch (IllegalArgumentException ex) {
             log.warn("Ignoring notification with an unreadable payload: {}", notification.getParameter());
         } catch (Exception ex) {
             // One bad queue must not take the listener down with it.
-            log.warn("Failed to broadcast queue {}: {}", notification.getParameter(), ex.getMessage());
+            log.warn("Failed to schedule broadcast for {}: {}", notification.getParameter(), ex.getMessage());
         }
     }
 
