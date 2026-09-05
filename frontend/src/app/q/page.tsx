@@ -2,7 +2,6 @@
 
 import { useEffect, useState, type FormEvent } from 'react'
 import { ApiError, api } from '@/lib/api'
-import { cx } from '@/lib/format'
 import { usePathSegment } from '@/lib/usePathSegment'
 import type { PublicQueueView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
@@ -10,8 +9,6 @@ import { Button } from '@/components/ui/Button'
 import { Field } from '@/components/ui/Field'
 import { LogoMark } from '@/components/Logo'
 import { PageLoader } from '@/components/PageLoader'
-
-type Channel = 'email' | 'phone'
 
 /**
  * Functionality 1 — what the QR code opens.
@@ -25,8 +22,7 @@ export default function JoinQueuePage() {
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [name, setName] = useState('')
-  const [channel, setChannel] = useState<Channel>('email')
-  const [contact, setContact] = useState('')
+  const [email, setEmail] = useState('')
   const [partySize, setPartySize] = useState('2')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -62,8 +58,7 @@ export default function JoinQueuePage() {
     try {
       const ticket = await api.publicApi.join(queueId, {
         name: name.trim(),
-        email: channel === 'email' ? contact.trim() : undefined,
-        phone: channel === 'phone' ? contact.trim() : undefined,
+        email: email.trim(),
         partySize: queue.requirePartySize ? Number(partySize) : undefined,
       })
       // A full navigation, not a client-side push: `/t/{token}` is its own exported shell.
@@ -133,46 +128,18 @@ export default function JoinQueuePage() {
               required
             />
 
-            <div>
-              <div className="mb-1.5 flex items-baseline justify-between gap-2">
-                <span className="text-sm font-medium">How should we reach you?</span>
-              </div>
-              <div
-                role="tablist"
-                aria-label="Contact method"
-                className="mb-3 inline-flex rounded-xl border border-line-strong bg-raised p-1"
-              >
-                {(['email', 'phone'] as const).map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    role="tab"
-                    aria-selected={channel === option}
-                    onClick={() => {
-                      setChannel(option)
-                      setContact('')
-                    }}
-                    className={cx(
-                      'rounded-lg px-4 py-1.5 text-sm font-medium transition-colors',
-                      channel === option ? 'bg-surface text-ink shadow-soft' : 'text-muted hover:text-ink',
-                    )}
-                  >
-                    {option === 'email' ? 'Email' : 'Phone'}
-                  </button>
-                ))}
-              </div>
-              <Field
-                label={channel === 'email' ? 'Email address' : 'Phone number'}
-                type={channel === 'email' ? 'email' : 'tel'}
-                inputMode={channel === 'email' ? 'email' : 'tel'}
-                autoComplete={channel === 'email' ? 'email' : 'tel'}
-                value={contact}
-                onChange={(event) => setContact(event.target.value)}
-                placeholder={channel === 'email' ? 'ana@example.com' : '+54 9 11 0000 0000'}
-                hint="We send your ticket link here, so you can close this page and come back to it."
-                required
-              />
-            </div>
+            <Field
+              label="Email address"
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="ana@example.com"
+              maxLength={255}
+              hint="We send your ticket link here, so you can close this page and come back to it."
+              required
+            />
 
             {queue.requirePartySize ? (
               <Field

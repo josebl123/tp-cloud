@@ -282,7 +282,7 @@ function ServingCard({
           <p className="mt-1 truncate text-lg">{entry.customerName}</p>
           <p className="mt-0.5 text-sm text-muted">
             {entry.partySize ? `Party of ${entry.partySize} · ` : ''}
-            {entry.customerPhone ?? entry.customerEmail}
+            {entry.customerEmail ?? entry.customerPhone}
           </p>
         </div>
 
