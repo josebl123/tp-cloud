@@ -9,6 +9,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -58,10 +59,17 @@ public interface QueueEntryRepository extends JpaRepository<QueueEntry, UUID> {
     @Query("select e.queue.id from QueueEntry e where e.ticketToken = :token")
     Optional<UUID> findQueueIdByTicketToken(@Param("token") UUID token);
 
-    /** The line itself: everyone still holding a place, in service order. */
+    /**
+     * The line itself: everyone still holding a place, in service order.
+     *
+     * <p>The lane is fetched with the entry. Scheduling reads the lane of every group it places, so
+     * leaving that association lazy turns one read of the line into one more query per person in it.
+     */
+    @EntityGraph(attributePaths = "lane")
     List<QueueEntry> findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(
             UUID queueId, Collection<EntryStatus> statuses);
 
+    @EntityGraph(attributePaths = "lane")
     List<QueueEntry> findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(UUID queueId, EntryStatus status);
 
     List<QueueEntry> findAllByQueueIdAndLaneIdAndStatusIn(UUID queueId, UUID laneId, Collection<EntryStatus> statuses);

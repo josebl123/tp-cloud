@@ -86,10 +86,23 @@ public class QueueViewFactory {
      */
     public QueueSnapshot snapshot(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService,
                                   EstimationService.ServiceTimeEstimate estimate) {
-        int inServiceCount = inService.size();
         // One simulation for the whole board. Running estimate() per row would replay the entire
         // schedule once for every person on the line, which is quadratic in its length.
-        var simulations = estimationService.simulateAll(queue, waiting, inService, estimate.duration());
+        return snapshot(queue, waiting, inService, estimate,
+                estimationService.simulateAll(queue, waiting, inService, estimate.duration()));
+    }
+
+    /**
+     * Overload taking a simulation the caller has already run.
+     *
+     * <p>A broadcast builds the board and every watching customer's ticket from the same line. Letting
+     * it hand the simulation in means the schedule is replayed once for the whole push, instead of once
+     * for the board and again for the tickets.
+     */
+    public QueueSnapshot snapshot(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService,
+                                  EstimationService.ServiceTimeEstimate estimate,
+                                  java.util.Map<java.util.UUID, EstimationService.Simulation> simulations) {
+        int inServiceCount = inService.size();
         List<EntryView> waitingViews = waiting.stream()
                 .map(entry -> entryView(entry, simulations.get(entry.getId()), inServiceCount))
                 .toList();
@@ -106,7 +119,7 @@ public class QueueViewFactory {
                 inServiceCount,
                 EstimationService.toMinutes(estimate.duration()),
                 estimate.usingDefault(),
-                clock.instant(), laneSnapshots(queue, waiting, inService, estimate));
+                clock.instant(), laneSnapshots(queue, waiting, inService, estimate, simulations));
     }
 
     public EntryView entryView(QueueEntry entry, EstimationService.Simulation simulation) {
@@ -206,14 +219,17 @@ public class QueueViewFactory {
     }
 
     private List<QueueLaneSnapshot> laneSnapshots(ServiceQueue queue, List<QueueEntry> waiting,
-                                                   List<QueueEntry> inService, EstimationService.ServiceTimeEstimate base) {
+                                                   List<QueueEntry> inService, EstimationService.ServiceTimeEstimate base,
+                                                   java.util.Map<java.util.UUID, EstimationService.Simulation> simulations) {
         return laneRepository.findAllByQueueIdOrderByPriorityAscMinPartySizeAsc(queue.getId()).stream().map(lane -> {
             var w = waiting.stream().filter(e -> lane.getId().equals(e.getLane().getId())).toList();
             var s = inService.stream().filter(e -> lane.getId().equals(e.getLane().getId())).toList();
             int used = java.util.stream.Stream.concat(w.stream(), s.stream()).mapToInt(e -> lane.getCapacityMode() == ar.edu.itba.cloud.queue.persistence.entity.LaneCapacityMode.PERSONS ? e.getPartySize() : 1).sum();
             List<EntryView> laneWaiting = new ArrayList<>(w.size());
             for (QueueEntry entry : w) {
-                laneWaiting.add(entryView(entry, estimationService.estimate(queue, waiting, inService, entry, base.duration())));
+                // The shared simulation again: replaying the schedule per row here would undo the
+                // single pass the board just made, once per lane.
+                laneWaiting.add(entryView(entry, simulations.get(entry.getId())));
             }
             return new QueueLaneSnapshot(new QueueLaneView(lane.getId(), lane.getName(), lane.getMinPartySize(), lane.getMaxPartySize(), lane.getPriority(), lane.getCapacityMode(), lane.getMaxSize(), lane.getTimeFactor(), lane.isActive()),
                     laneWaiting,

@@ -169,7 +169,8 @@ public class QueueEntryService {
             throw new ConflictException("QUEUE_EMPTY", "There is nobody waiting in this queue");
         }
 
-        QueueEntrySelector.Selection selected = selector.select(queue, waiting, queue.getRoundRobinPosition());
+        QueueEntrySelector.Selection selected = selector.select(queue,
+                selector.rotation(laneService.list(queue)), waiting, queue.getRoundRobinPosition());
         QueueEntry entry = selected.entry();
         if (queue.getCallStrategy() == ar.edu.itba.cloud.queue.persistence.entity.CallStrategy.ROUND_ROBIN) {
             queue.setRoundRobinPosition(selected.nextRoundRobinPosition());

@@ -13,6 +13,7 @@ import ar.edu.itba.cloud.queue.persistence.entity.SupportedLocale;
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -49,7 +50,7 @@ class QueueEntrySelectorTest {
         QueueEntry first = entry(large, 1000);
         QueueEntry second = entry(small, 2000);
 
-        assertThat(selector.select(queue, List.of(second, first), 0).entry()).isSameAs(first);
+        assertThat(selector.select(queue, rotation(), List.of(second, first), 0).entry()).isSameAs(first);
     }
 
     @Test
@@ -60,7 +61,7 @@ class QueueEntrySelectorTest {
         QueueEntry priorityLane = entry(small, 3000);
         QueueEntry priorityLaneOlder = entry(small, 2000);
 
-        assertThat(selector.select(queue, List.of(oldestOverall, priorityLane, priorityLaneOlder), 0).entry())
+        assertThat(selector.select(queue, rotation(), List.of(oldestOverall, priorityLane, priorityLaneOlder), 0).entry())
                 .isSameAs(priorityLaneOlder);
     }
 
@@ -73,11 +74,11 @@ class QueueEntrySelectorTest {
         QueueEntry largeFirst = entry(large, 3000);
         List<QueueEntry> waiting = List.of(smallFirst, smallSecond, largeFirst);
 
-        QueueEntrySelector.Selection first = selector.select(queue, waiting, 0);
+        QueueEntrySelector.Selection first = selector.select(queue, rotation(), waiting, 0);
         assertThat(first.entry()).isSameAs(smallFirst);
 
         // The cursor it returns is what makes the next call land in the other lane.
-        QueueEntrySelector.Selection second = selector.select(queue,
+        QueueEntrySelector.Selection second = selector.select(queue, rotation(),
                 List.of(smallSecond, largeFirst), first.nextRoundRobinPosition());
         assertThat(second.entry()).isSameAs(largeFirst);
     }
@@ -89,7 +90,7 @@ class QueueEntrySelectorTest {
         QueueEntry onlyLarge = entry(large, 5000);
 
         // Cursor points past the only lane that still has anyone; it must wrap, not return nothing.
-        assertThat(selector.select(queue, List.of(onlyLarge), 7).entry()).isSameAs(onlyLarge);
+        assertThat(selector.select(queue, rotation(), List.of(onlyLarge), 7).entry()).isSameAs(onlyLarge);
     }
 
     @Test
@@ -98,8 +99,8 @@ class QueueEntrySelectorTest {
         queue.setCallStrategy(CallStrategy.ROUND_ROBIN);
         List<QueueEntry> waiting = List.of(entry(small, 1000), entry(large, 2000), entry(small, 3000));
 
-        QueueEntrySelector.Selection once = selector.select(queue, waiting, 1);
-        QueueEntrySelector.Selection twice = selector.select(queue, waiting, 1);
+        QueueEntrySelector.Selection once = selector.select(queue, rotation(), waiting, 1);
+        QueueEntrySelector.Selection twice = selector.select(queue, rotation(), waiting, 1);
 
         assertThat(once.entry()).isSameAs(twice.entry());
         assertThat(once.nextRoundRobinPosition()).isEqualTo(twice.nextRoundRobinPosition());
@@ -108,8 +109,50 @@ class QueueEntrySelectorTest {
     @Test
     @DisplayName("an empty line is a programming error, not an empty answer")
     void refusesAnEmptyLine() {
-        assertThatThrownBy(() -> selector.select(queue, List.of(), 0))
+        assertThatThrownBy(() -> selector.select(queue, rotation(), List.of(), 0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * The rotation is the queue's lanes, not the busy ones, and this is why. Serving A then B leaves the
+     * cursor meaning "C next". If the cursor indexed only the lanes with somebody waiting, A emptying
+     * would shrink that list to two, fold the cursor back to zero, and hand the turn to B again while C
+     * waited - starving exactly the lane a round robin exists to protect.
+     */
+    @Test
+    @DisplayName("a lane emptying does not cost another lane its turn")
+    void anEmptyingLaneDoesNotShiftTheRotation() {
+        queue.setCallStrategy(CallStrategy.ROUND_ROBIN);
+        QueueLane third = lane("C", 2);
+        List<QueueLane> rotation = selector.rotation(List.of(small, large, third));
+
+        QueueEntry inA = entry(small, 1000);
+        QueueEntry alsoInA = entry(small, 1100);
+        QueueEntry inB = entry(large, 2000);
+        QueueEntry alsoInB = entry(large, 2100);
+        QueueEntry inC = entry(third, 3000);
+        List<QueueEntry> waiting = new ArrayList<>(List.of(inA, alsoInA, inB, alsoInB, inC));
+
+        QueueEntrySelector.Selection first = selector.select(queue, rotation, waiting, 0);
+        assertThat(first.entry()).isSameAs(inA);
+        waiting.remove(first.entry());
+
+        QueueEntrySelector.Selection second = selector.select(queue, rotation, waiting, first.nextRoundRobinPosition());
+        assertThat(second.entry()).isSameAs(inB);
+        waiting.remove(second.entry());
+
+        // Everyone left in A gives up, so A drops out of the line entirely.
+        waiting.remove(alsoInA);
+
+        QueueEntrySelector.Selection third_ = selector.select(queue, rotation, waiting, second.nextRoundRobinPosition());
+        assertThat(third_.entry())
+                .as("C was due; B must not be served twice because A emptied")
+                .isSameAs(inC);
+    }
+
+    /** Every active lane of the queue, which is what the cursor indexes. */
+    private List<QueueLane> rotation() {
+        return selector.rotation(List.of(small, large));
     }
 
     // --- fixtures ------------------------------------------------------------------------------

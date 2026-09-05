@@ -30,6 +30,9 @@ class EstimationServiceTest {
     private static final Instant NOW = Instant.parse("2026-03-01T12:00:00Z");
 
     @Mock
+    private ar.edu.itba.cloud.queue.persistence.repository.QueueLaneRepository laneRepository;
+
+    @Mock
     private QueueEntryRepository entryRepository;
 
     private EstimationService estimationService;
@@ -37,7 +40,7 @@ class EstimationServiceTest {
 
     @BeforeEach
     void setUp() {
-        estimationService = new EstimationService(entryRepository, properties(10));
+        estimationService = new EstimationService(entryRepository, properties(10), new QueueEntrySelector(), laneRepository);
         queue = new ServiceQueue(new Establishment("Demo", "UTC", NOW), "Mesas", NOW);
         queue.setDefaultServiceMinutes(5);
         queue.setServiceStations(1);
@@ -119,7 +122,7 @@ class EstimationServiceTest {
     @Test
     @DisplayName("asks the repository for at most the configured number of samples")
     void limitsSampleSize() {
-        estimationService = new EstimationService(entryRepository, properties(3));
+        estimationService = new EstimationService(entryRepository, properties(3), new QueueEntrySelector(), laneRepository);
         when(entryRepository.findRecentServiceTimings(any(), any(Pageable.class)))
                 .thenReturn(List.of(served(Duration.ofMinutes(6))));
 

@@ -5,6 +5,8 @@ import ar.edu.itba.cloud.queue.persistence.entity.ServiceQueue;
 import ar.edu.itba.cloud.queue.persistence.entity.QueueEntry;
 import ar.edu.itba.cloud.queue.persistence.repository.EntryTimings;
 import ar.edu.itba.cloud.queue.persistence.repository.QueueEntryRepository;
+import ar.edu.itba.cloud.queue.persistence.repository.QueueLaneRepository;
+import ar.edu.itba.cloud.queue.persistence.entity.QueueLane;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -29,17 +31,24 @@ public class EstimationService {
     private final QueueEntryRepository entryRepository;
     private final AppProperties properties;
     private final QueueEntrySelector selector;
+    private final QueueLaneRepository laneRepository;
 
-    @Autowired
-    public EstimationService(QueueEntryRepository entryRepository, AppProperties properties, QueueEntrySelector selector) {
+    public EstimationService(QueueEntryRepository entryRepository, AppProperties properties,
+                             QueueEntrySelector selector, QueueLaneRepository laneRepository) {
         this.entryRepository = entryRepository;
         this.properties = properties;
         this.selector = selector;
+        this.laneRepository = laneRepository;
     }
 
-    /** Kept for focused unit tests that do not exercise lane scheduling. */
-    public EstimationService(QueueEntryRepository entryRepository, AppProperties properties) {
-        this(entryRepository, properties, new QueueEntrySelector());
+    /**
+     * Every active lane of this queue, in the order a round robin rotates over them.
+     *
+     * <p>Read once per simulation rather than per decision: the rotation cannot change while one
+     * simulation runs, and the cursor is only meaningful against the whole set.
+     */
+    private List<QueueLane> rotation(ServiceQueue queue) {
+        return selector.rotation(laneRepository.findAllByQueueIdOrderByPriorityAscMinPartySizeAsc(queue.getId()));
     }
 
     /** Mean duration of the most recent completed services on this queue. */
@@ -106,11 +115,12 @@ public class EstimationService {
             Duration freeAt = stations.remove();
             stations.add(freeAt.plus(adjusted(averageServiceTime, entry)));
         }
+        List<QueueLane> rotation = rotation(queue);
         List<QueueEntry> remaining = new ArrayList<>(waiting);
         int cursor = queue.getRoundRobinPosition();
         int scheduledAhead = 0;
         while (!remaining.isEmpty()) {
-            QueueEntrySelector.Selection selection = selector.select(queue, remaining, cursor);
+            QueueEntrySelector.Selection selection = selector.select(queue, rotation, remaining, cursor);
             cursor = selection.nextRoundRobinPosition();
             QueueEntry entry = selection.entry();
             Duration start = stations.remove();
@@ -161,11 +171,12 @@ public class EstimationService {
         }
 
         Map<UUID, Simulation> simulations = new HashMap<>();
+        List<QueueLane> rotation = rotation(queue);
         List<QueueEntry> remaining = new ArrayList<>(waiting);
         int cursor = queue.getRoundRobinPosition();
         int scheduledAhead = 0;
         while (!remaining.isEmpty()) {
-            QueueEntrySelector.Selection selection = selector.select(queue, remaining, cursor);
+            QueueEntrySelector.Selection selection = selector.select(queue, rotation, remaining, cursor);
             cursor = selection.nextRoundRobinPosition();
             QueueEntry entry = selection.entry();
             Duration start = stations.remove();

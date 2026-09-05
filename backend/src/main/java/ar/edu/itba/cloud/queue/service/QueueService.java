@@ -227,17 +227,17 @@ public class QueueService {
                 queueId, List.of(EntryStatus.CALLED, EntryStatus.SERVING));
         EstimationService.ServiceTimeEstimate estimate = estimationService.averageServiceTime(queue);
 
+        // Simulated once and shared: the board and every watching customer read the same schedule.
+        Map<UUID, EstimationService.Simulation> simulations =
+                estimationService.simulateAll(queue, waiting, inService, estimate.duration());
+
         QueueSnapshot snapshot = includeBoard
-                ? viewFactory.snapshot(queue, waiting, inService, estimate)
+                ? viewFactory.snapshot(queue, waiting, inService, estimate, simulations)
                 : null;
 
         if (ticketTokens.isEmpty()) {
             return new QueueBroadcast(snapshot, Map.of());
         }
-
-        // One simulation for the whole line, shared by every watcher.
-        Map<UUID, EstimationService.Simulation> simulations =
-                estimationService.simulateAll(queue, waiting, inService, estimate.duration());
 
         Map<UUID, QueueEntry> byToken = new HashMap<>();
         for (QueueEntry entry : waiting) {
