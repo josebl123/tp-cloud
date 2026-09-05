@@ -77,6 +77,32 @@ public class GraceService {
      *
      * @return true when at least one entry changed, so the caller knows to broadcast
      */
+    /**
+     * Expires whatever is overdue in this queue, taking the queue lock only when there is something to
+     * expire. For callers that are inside a transaction but hold no lock yet - every read path.
+     *
+     * <p>Reads have to expire before answering, or a customer would be shown a call the clock already
+     * invalidated. Doing that by locking first made every reader of a queue queue up behind the same
+     * exclusive row lock, on public endpoints that never write: the lock was taken, held for the rest of
+     * the transaction, and released without a single row changing. Worse, {@code SELECT FOR UPDATE}
+     * assigns a transaction id and writes to the row header, so those reads cost WAL and dirty pages
+     * like writes. Since expiry is rare and {@code ix_entry_grace} answers "is anything overdue?" as a
+     * plain indexed read, asking first costs one cheap query and keeps the lock on the rare path that
+     * actually mutates.
+     *
+     * @return true when at least one entry changed, so the caller knows to publish
+     */
+    public boolean expireDueIfAny(UUID queueId) {
+        boolean anythingDue = entryRepository.existsByQueueIdAndStatusAndGraceExpiresAtLessThanEqual(
+                queueId, EntryStatus.CALLED, clock.instant());
+        if (!anythingDue) {
+            return false;
+        }
+        // Re-checked under the lock by expireDue: another transaction may have got here first.
+        ServiceQueue queue = queueRepository.findByIdForUpdate(queueId).orElse(null);
+        return queue != null && expireDue(queue);
+    }
+
     public boolean expireDue(ServiceQueue queue) {
         List<QueueEntry> expired = entryRepository
                 .findAllByQueueIdAndStatusAndGraceExpiresAtLessThanEqual(

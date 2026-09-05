@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.ContextClosedEvent;
@@ -33,6 +34,10 @@ public class SseHub {
     private final Map<UUID, Set<SseEmitter>> staffSubscribers = new ConcurrentHashMap<>();
     private final Map<UUID, Map<UUID, Set<SseEmitter>>> ticketSubscribers = new ConcurrentHashMap<>();
 
+    // Kept as counters rather than walked on demand, so reading them stays O(1) however many are open.
+    private final AtomicInteger staffConnections = new AtomicInteger();
+    private final AtomicInteger ticketConnections = new AtomicInteger();
+
     private final AppProperties properties;
 
     public SseHub(AppProperties properties) {
@@ -43,6 +48,7 @@ public class SseHub {
         SseEmitter emitter = newEmitter();
         Set<SseEmitter> emitters = staffSubscribers.computeIfAbsent(queueId, key -> new CopyOnWriteArraySet<>());
         emitters.add(emitter);
+        staffConnections.incrementAndGet();
         registerCleanup(emitter, () -> removeStaff(queueId, emitter));
         return emitter;
     }
@@ -53,8 +59,19 @@ public class SseHub {
                 .computeIfAbsent(queueId, key -> new ConcurrentHashMap<>())
                 .computeIfAbsent(ticketToken, key -> new CopyOnWriteArraySet<>())
                 .add(emitter);
+        ticketConnections.incrementAndGet();
         registerCleanup(emitter, () -> removeTicket(queueId, ticketToken, emitter));
         return emitter;
+    }
+
+    /** Staff board streams this instance is holding right now. */
+    public int staffConnections() {
+        return staffConnections.get();
+    }
+
+    /** Customer ticket streams this instance is holding right now. */
+    public int ticketConnections() {
+        return ticketConnections.get();
     }
 
     public boolean hasStaffSubscribers(UUID queueId) {
@@ -165,17 +182,23 @@ public class SseHub {
         emitter.onError(error -> cleanup.run());
     }
 
-    private void removeStaff(UUID queueId, SseEmitter emitter) {
+    // Package-private, not private: the emitter callbacks that normally invoke these are fired by the
+    // MVC async infrastructure, so a test has no other way to exercise the cleanup path.
+    void removeStaff(UUID queueId, SseEmitter emitter) {
         staffSubscribers.computeIfPresent(queueId, (key, emitters) -> {
-            emitters.remove(emitter);
+            if (emitters.remove(emitter)) {
+                staffConnections.decrementAndGet();
+            }
             return emitters.isEmpty() ? null : emitters;
         });
     }
 
-    private void removeTicket(UUID queueId, UUID ticketToken, SseEmitter emitter) {
+    void removeTicket(UUID queueId, UUID ticketToken, SseEmitter emitter) {
         ticketSubscribers.computeIfPresent(queueId, (key, byTicket) -> {
             byTicket.computeIfPresent(ticketToken, (token, emitters) -> {
-                emitters.remove(emitter);
+                if (emitters.remove(emitter)) {
+                    ticketConnections.decrementAndGet();
+                }
                 return emitters.isEmpty() ? null : emitters;
             });
             return byTicket.isEmpty() ? null : byTicket;

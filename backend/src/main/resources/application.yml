@@ -1,4 +1,14 @@
 spring:
+  config:
+    # A `.env` is valid .properties syntax, so Spring can read it natively - no library, no export.
+    # Both are optional: the application still starts without them, falling back to the defaults below,
+    # which is what tests and CI rely on. Values found here win over those defaults.
+    #   ./.env               local development, next to where the process runs
+    #   /etc/queue/queue.env the deployed instance
+    import:
+      - optional:file:./.env[.properties]
+      - optional:file:/etc/queue/queue.env[.properties]
+
   application:
     name: queue-api
   datasource:
@@ -26,8 +36,23 @@ spring:
     enabled: true
     locations: classpath:db/migration
   mail:
+    # Defaults point at Mailpit, which wants no credentials. A real provider needs all four.
+    # Gmail: smtp.gmail.com / 587 / auth and starttls true, with a 16-character App Password.
     host: ${MAIL_HOST:localhost}
     port: ${MAIL_PORT:1025}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${MAIL_AUTH:false}
+          starttls:
+            enable: ${MAIL_STARTTLS:false}
+          # Delivery runs after commit while holding a database connection. Without these an
+          # unreachable SMTP host would block that thread and that connection until the OS gave up.
+          connectiontimeout: ${MAIL_TIMEOUT_MS:5000}
+          timeout: ${MAIL_TIMEOUT_MS:5000}
+          writetimeout: ${MAIL_TIMEOUT_MS:5000}
   jackson:
     default-property-inclusion: non_null
   messages:
@@ -59,7 +84,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # `metrics` carries q.sse.connections, the count of open streams this instance is holding, which
+        # is what the Auto Scaling metric has to be calibrated against. SecurityConfig leaves only
+        # /actuator/health and /actuator/info public, so reading it needs a staff token.
+        include: health,info,metrics
   health:
     # Notification delivery is deliberately non-fatal: a failed send is recorded on the row and never
     # propagated, because a broken mail server must not undo a legitimate queue movement. Health has

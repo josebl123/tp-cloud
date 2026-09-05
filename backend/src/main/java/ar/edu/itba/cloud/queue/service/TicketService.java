@@ -56,13 +56,12 @@ public class TicketService {
     public TicketView get(UUID ticketToken) {
         UUID queueId = entryRepository.findQueueIdByTicketToken(ticketToken)
                 .orElseThrow(NotFoundException::ticket);
-        ServiceQueue queue = queueRepository.findByIdForUpdate(queueId)
-                .orElseThrow(() -> NotFoundException.queue(queueId));
-
-        if (graceService.expireDue(queue)) {
+        if (graceService.expireDueIfAny(queueId)) {
             realtimeBus.publish(queueId);
         }
 
+        ServiceQueue queue = queueRepository.findByIdWithEstablishment(queueId)
+                .orElseThrow(() -> NotFoundException.queue(queueId));
         QueueEntry entry = entryRepository.findByTicketToken(ticketToken).orElseThrow(NotFoundException::ticket);
         return build(queue, entry);
     }

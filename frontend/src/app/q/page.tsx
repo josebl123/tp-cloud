@@ -13,8 +13,6 @@ import { Field } from '@/components/ui/Field'
 import { LogoMark } from '@/components/Logo'
 import { PageLoader } from '@/components/PageLoader'
 
-type Channel = 'email' | 'phone'
-
 /**
  * Functionality 1 — what the QR code opens.
  *
@@ -28,8 +26,7 @@ export default function JoinQueuePage() {
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [name, setName] = useState('')
-  const [channel, setChannel] = useState<Channel>('email')
-  const [contact, setContact] = useState('')
+  const [email, setEmail] = useState('')
   const [partySize, setPartySize] = useState('2')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
@@ -65,8 +62,7 @@ export default function JoinQueuePage() {
     try {
       const ticket = await api.publicApi.join(queueId, {
         name: name.trim(),
-        email: channel === 'email' ? contact.trim() : undefined,
-        phone: channel === 'phone' ? contact.trim() : undefined,
+        email: email.trim(),
         partySize: queue.requirePartySize ? Number(partySize) : undefined,
         // Remembered server-side, so the ticket email arrives in the language this page is in.
         locale,
@@ -138,48 +134,18 @@ export default function JoinQueuePage() {
               required
             />
 
-            <div>
-              <div className="mb-1.5 flex items-baseline justify-between gap-2">
-                <span className="text-sm font-medium">{t('join.howReach')}</span>
-              </div>
-              <div
-                role="tablist"
-                aria-label={t('join.howReach')}
-                className="mb-3 inline-flex rounded-xl border border-line-strong bg-raised p-1"
-              >
-                {(['email', 'phone'] as const).map((option) => (
-                  <button
-                    key={option}
-                    type="button"
-                    role="tab"
-                    aria-selected={channel === option}
-                    onClick={() => {
-                      setChannel(option)
-                      setContact('')
-                    }}
-                    className={cx(
-                      'rounded-lg px-4 py-1.5 text-sm font-medium transition-colors',
-                      channel === option ? 'bg-surface text-ink shadow-soft' : 'text-muted hover:text-ink',
-                    )}
-                  >
-                    {option === 'email' ? t('join.channelEmail') : t('join.channelPhone')}
-                  </button>
-                ))}
-              </div>
-              <Field
-                label={channel === 'email' ? t('join.emailLabel') : t('join.phoneLabel')}
-                type={channel === 'email' ? 'email' : 'tel'}
-                inputMode={channel === 'email' ? 'email' : 'tel'}
-                autoComplete={channel === 'email' ? 'email' : 'tel'}
-                value={contact}
-                onChange={(event) => setContact(event.target.value)}
-                placeholder={
-                  channel === 'email' ? t('join.emailPlaceholder') : t('join.phonePlaceholder')
-                }
-                hint={t('join.contactHint')}
-                required
-              />
-            </div>
+            <Field
+              label={t('join.emailLabel')}
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder={t('join.emailPlaceholder')}
+              maxLength={255}
+              hint={t('join.contactHint')}
+              required
+            />
 
             {queue.requirePartySize ? (
               <Field

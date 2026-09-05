@@ -168,9 +168,11 @@ public class QueueService {
     /** The staff board. Expires overdue grace periods first so it always reflects the current line. */
     @Transactional
     public QueueSnapshot getSnapshot(UUID userId, UUID queueId) {
-        ServiceQueue queue = lock(queueId);
+        ServiceQueue queue = load(queueId);
+        // Authorise before expiring: a member of another establishment must not be able to drive side
+        // effects on this queue on their way to a 403.
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
-        if (graceService.expireDue(queue)) {
+        if (graceService.expireDueIfAny(queueId)) {
             realtimeBus.publish(queueId);
         }
         return buildSnapshot(queue);
@@ -246,10 +248,10 @@ public class QueueService {
     /** What a customer sees right after scanning the QR. No authentication, no personal data. */
     @Transactional
     public PublicQueueView publicView(UUID queueId) {
-        ServiceQueue queue = lock(queueId);
-        if (graceService.expireDue(queue)) {
+        if (graceService.expireDueIfAny(queueId)) {
             realtimeBus.publish(queueId);
         }
+        ServiceQueue queue = load(queueId);
         int waiting = (int) entryRepository.countByQueueIdAndStatus(queueId, EntryStatus.WAITING);
         int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId,
                 List.of(EntryStatus.CALLED, EntryStatus.SERVING));

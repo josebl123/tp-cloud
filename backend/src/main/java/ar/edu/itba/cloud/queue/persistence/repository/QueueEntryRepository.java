@@ -69,6 +69,16 @@ public interface QueueEntryRepository extends JpaRepository<QueueEntry, UUID> {
     long countByQueueIdAndStatusIn(UUID queueId, Collection<EntryStatus> statuses);
 
     /** Entries whose grace period has run out and still sit in CALLED. */
+    /**
+     * Whether anything in this queue is past its deadline.
+     *
+     * <p>Served by {@code ix_entry_grace}, and it takes no lock: this is what lets a read find out that
+     * it has nothing to expire - the overwhelmingly common case - without serialising against every
+     * other reader of the same queue.
+     */
+    boolean existsByQueueIdAndStatusAndGraceExpiresAtLessThanEqual(
+            UUID queueId, EntryStatus status, Instant deadline);
+
     List<QueueEntry> findAllByQueueIdAndStatusAndGraceExpiresAtLessThanEqual(
             UUID queueId, EntryStatus status, Instant deadline);
 

@@ -123,11 +123,17 @@ sleeping.
 
 Everything is overridable by environment variable; defaults suit local development.
 
+Values also come from a **`.env`** file, read natively through `spring.config.import` - no library and
+no `export`. Copy `backend/.env.example` to `backend/.env` and fill it in; the file is gitignored, and
+`/etc/queue/queue.env` is read the same way on a deployed instance. It is properties syntax, not shell:
+no `export`, no quotes. Both imports are optional, so tests and CI still run on the defaults below.
+
 | Property | Env | Default | Purpose |
 |---|---|---|---|
 | `q.public-base-url` | `PUBLIC_BASE_URL` | `http://localhost:3000` | SPA base. QR codes and ticket links are built on it. |
 | `q.cors-allowed-origins` | `CORS_ORIGINS` | `http://localhost:3000` | |
 | `q.jwt.secret` | `JWT_SECRET` | dev value | **Must be overridden outside local dev.** Minimum 32 bytes. |
+| `spring.mail.*` | `MAIL_HOST` `MAIL_PORT` `MAIL_USERNAME` `MAIL_PASSWORD` `MAIL_AUTH` `MAIL_STARTTLS` | Mailpit on `localhost:1025`, no auth | A real provider needs all six. Gmail: `smtp.gmail.com`, `587`, auth and STARTTLS on, and a 16-character App Password rather than the account password. Email is the only channel a customer can be reached on. |
 | `q.jwt.ttl` | | `12h` | Access-token lifetime. |
 | `q.estimation.service-time-samples` | | `10` | Recent services averaged into the ETA. |
 | `q.grace.sweep-interval` | | `10s` | How often expired grace periods are swept. |
