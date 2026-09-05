@@ -1,10 +1,32 @@
 spring:
+  config:
+    # A `.env` is valid .properties syntax, so Spring can read it natively - no library, no export.
+    # Both are optional: the application still starts without them, falling back to the defaults
+    # below, which is what tests and CI rely on. Values found here win over those defaults.
+    #   ./.env               local development, next to where the process runs
+    #   /etc/queue/queue.env the deployed instance
+    import:
+      - optional:file:./.env[.properties]
+      - optional:file:/etc/queue/queue.env[.properties]
+
   application:
     name: queue-api
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:55432/qdb}
     username: ${DB_USER:q}
     password: ${DB_PASSWORD:q}
+    hikari:
+      # An instance holds thousands of SSE connections on virtual threads but only ever needs a
+      # handful of database connections, so this is sized against the database, not against traffic:
+      # keep (largest Auto Scaling Group size x this) under ~80% of the instance's max_connections.
+      # A db.t3.micro allows roughly 110, which caps a pool of 10 at about eight application nodes.
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      minimum-idle: ${DB_POOL_SIZE:10}
+      # Fail fast rather than let requests pile up on an exhausted pool. Acquiring a connection
+      # normally takes under a millisecond; waiting 30s (the default) only turns a slow query on one
+      # queue into every request on the instance timing out, including the load balancer's health
+      # check - which then costs the instance its place in the target group.
+      connection-timeout: 3000
   jpa:
     open-in-view: false
     hibernate:
@@ -16,8 +38,23 @@ spring:
     enabled: true
     locations: classpath:db/migration
   mail:
+    # Defaults point at Mailpit, which wants no credentials. A real provider needs all four.
     host: ${MAIL_HOST:localhost}
     port: ${MAIL_PORT:1025}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${MAIL_AUTH:true}
+          starttls:
+            enable: ${MAIL_STARTTLS:true}
+          # Delivery runs after commit on the thread that made the change, holding a database
+          # connection while it waits. Without these an unreachable SMTP host would block that
+          # thread and that connection until the OS gave up - minutes, not seconds.
+          connectiontimeout: ${MAIL_TIMEOUT_MS:5000}
+          timeout: ${MAIL_TIMEOUT_MS:5000}
+          writetimeout: ${MAIL_TIMEOUT_MS:5000}
   jackson:
     default-property-inclusion: non_null
   threads:
@@ -33,11 +70,30 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # `metrics` carries q.sse.connections, the count of open streams this instance is holding.
+        # SecurityConfig leaves only /actuator/health and /actuator/info public, so reading it needs a
+        # staff token - operational numbers should not be available to anyone who finds the port.
+        include: health,info,metrics
   endpoint:
     health:
       probes:
         enabled: true
+      group:
+        # What the load balancer polls: /actuator/health/readiness.
+        #
+        # Pinned explicitly rather than left to the default, because what it leaves OUT is the point.
+        # It does not check the database. Every instance shares one RDS, so failing readiness when the
+        # database is slow or unreachable takes instances out of the target group without there being
+        # anywhere healthier to send the traffic - and the Auto Scaling Group then terminates and
+        # replaces them in a loop, whose replacements fail the same check. A saturated connection pool
+        # on one busy queue must not cost a healthy instance its place in the target group.
+        #
+        # /actuator/health still aggregates everything, including the database. Use that one by hand,
+        # and for alarms - never as the load balancer's health check.
+        readiness:
+          include: readinessState
+        liveness:
+          include: livenessState
 
 springdoc:
   swagger-ui:
@@ -65,7 +121,20 @@ q:
   sse:
     timeout: 30m
     heartbeat-interval: 20s
+  realtime:
+    # Cross-instance fan-out over PostgreSQL LISTEN/NOTIFY. Emitters live in the JVM holding the
+    # connection, so without this a customer on one instance never hears about a change made on
+    # another - which is exactly what happens as soon as the Auto Scaling Group runs more than one.
+    # Set to false only when running a single instance.
+    #
+    # The listening session is held open for the life of the process and is opened outside HikariCP,
+    # so budget ONE EXTRA CONNECTION per instance: (max ASG size x (pool + 1)) under ~80% of the
+    # database's max_connections.
+    enabled: ${REALTIME_ENABLED:true}
+    channel: queue_changed
+    poll-timeout: 30s
+    reconnect-delay: 5s
   notifications:
     email:
-      enabled: ${NOTIFY_EMAIL_ENABLED:false}
+      enabled: ${NOTIFY_EMAIL_ENABLED:true}
       from: ${NOTIFY_EMAIL_FROM:no-reply@q.local}

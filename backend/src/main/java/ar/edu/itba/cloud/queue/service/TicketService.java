@@ -52,27 +52,26 @@ public class TicketService {
     /**
      * Current state of a ticket, expiring any overdue grace period first so a customer is never shown
      * a call the clock has already invalidated.
+     *
+     * <p>The line is then read without holding the queue lock, exactly as the live updates in
+     * {@code QueueService#readBroadcast} already do. A movement committing mid-read can leave a
+     * position momentarily off by one; the push that follows that same movement corrects it within
+     * milliseconds, which is a better trade than serialising every customer looking at their phone
+     * behind the lock staff need to operate the line.
      */
     @Transactional
     public TicketView get(UUID ticketToken) {
         UUID queueId = entryRepository.findQueueIdByTicketToken(ticketToken)
                 .orElseThrow(NotFoundException::ticket);
-        ServiceQueue queue = queueRepository.findByIdForUpdate(queueId)
-                .orElseThrow(() -> NotFoundException.queue(queueId));
 
-        if (graceService.expireDue(queue)) {
+        if (graceService.expireDueIfAny(queueId)) {
             publisher.publishEvent(new QueueChangedEvent(queueId));
         }
 
+        ServiceQueue queue = queueRepository.findByIdWithEstablishment(queueId)
+                .orElseThrow(() -> NotFoundException.queue(queueId));
         QueueEntry entry = entryRepository.findByTicketToken(ticketToken).orElseThrow(NotFoundException::ticket);
         return build(queue, entry);
-    }
-
-    /** Pure read, used when pushing updates to subscribers after a change has already been applied. */
-    @Transactional(readOnly = true)
-    public TicketView read(UUID ticketToken) {
-        QueueEntry entry = entryRepository.findByTicketToken(ticketToken).orElseThrow(NotFoundException::ticket);
-        return build(entry.getQueue(), entry);
     }
 
     /** Functionality 3: the customer's own notification history. */

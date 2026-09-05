@@ -67,7 +67,15 @@ public class QueueViewFactory {
      * @param inService entries already called or being attended
      */
     public QueueSnapshot snapshot(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService) {
-        EstimationService.ServiceTimeEstimate estimate = estimationService.averageServiceTime(queue);
+        return snapshot(queue, waiting, inService, estimationService.averageServiceTime(queue));
+    }
+
+    /**
+     * Overload for callers that already resolved the average service time and would otherwise pay for
+     * it twice - a broadcast builds the board and every ticket view from the same estimate.
+     */
+    public QueueSnapshot snapshot(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService,
+                                  EstimationService.ServiceTimeEstimate estimate) {
         int inServiceCount = inService.size();
 
         List<EntryView> waitingViews = new ArrayList<>(waiting.size());
@@ -126,7 +134,15 @@ public class QueueViewFactory {
 
     public TicketView ticketView(QueueEntry entry, Integer peopleAhead, int inServiceCount,
                                  Duration averageServiceTime) {
-        ServiceQueue queue = entry.getQueue();
+        return ticketView(entry.getQueue(), entry, peopleAhead, inServiceCount, averageServiceTime);
+    }
+
+    /**
+     * Overload for callers holding the queue already, so building many ticket views in a row cannot
+     * touch the database once per view.
+     */
+    public TicketView ticketView(ServiceQueue queue, QueueEntry entry, Integer peopleAhead,
+                                 int inServiceCount, Duration averageServiceTime) {
         Integer position = peopleAhead == null ? null : peopleAhead + 1;
         Integer eta = peopleAhead == null ? null : EstimationService.toMinutes(
                 estimationService.estimateWait(queue, peopleAhead, inServiceCount, averageServiceTime));

@@ -18,6 +18,7 @@ public record AppProperties(
         @DefaultValue Estimation estimation,
         @DefaultValue Grace grace,
         @DefaultValue Sse sse,
+        @DefaultValue Realtime realtime,
         @DefaultValue Notifications notifications,
         @DefaultValue Seed seed) {
 
@@ -40,6 +41,24 @@ public record AppProperties(
     public record Sse(
             @DefaultValue("30m") Duration timeout,
             @DefaultValue("20s") Duration heartbeatInterval) {
+    }
+
+    /** Cross-instance fan-out of live updates, over PostgreSQL LISTEN/NOTIFY. */
+    public record Realtime(
+            /**
+             * When false the instance still pushes to its own subscribers but neither announces its
+             * changes nor listens for anyone else's. Only useful running a single instance.
+             */
+            @DefaultValue("true") boolean enabled,
+
+            /** Notification channel. A PostgreSQL identifier: lowercase letters, digits, underscore. */
+            @DefaultValue("queue_changed") String channel,
+
+            /** How long the listening thread waits for a notification before looping to check it should still run. */
+            @DefaultValue("30s") Duration pollTimeout,
+
+            /** Pause before reopening the listening connection after it drops, as in an RDS failover. */
+            @DefaultValue("5s") Duration reconnectDelay) {
     }
 
     public record Notifications(@DefaultValue Email email) {

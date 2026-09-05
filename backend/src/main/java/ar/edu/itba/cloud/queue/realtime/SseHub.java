@@ -7,6 +7,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -18,11 +19,15 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <p>Two audiences subscribe to the same queue: staff watching the board, and customers watching
  * their own ticket. Both are keyed by queue id, because every line movement affects all of them.
  *
- * <p><strong>Scaling note:</strong> emitters live in this JVM only, so with more than one instance a
- * customer would only receive updates produced by the instance holding their connection. Moving to
- * several replicas means fanning the {@code QueueChangedEvent} out through a shared broker
- * (Redis pub/sub, SNS, a managed WebSocket API) and having every instance push to its local
- * emitters. The rest of the application is stateless and needs no change for that.
+ * <p>It also counts what it holds. An instance carries thousands of these streams on virtual threads
+ * while barely using any CPU, so the number of open streams - not CPU - is what actually describes how
+ * loaded an instance is. Exposed as a metric by {@link SseMetrics}.
+ *
+ * <p><strong>Scaling note:</strong> emitters live in this JVM only, so an instance can only push to
+ * the customers the load balancer happened to put on it. {@link QueueChangeNotifier} and
+ * {@link QueueChangeListener} close that gap over PostgreSQL LISTEN/NOTIFY: every instance announces
+ * its changes on a channel and pushes the ones it hears about to its own emitters. The rest of the
+ * application is stateless.
  */
 @Component
 public class SseHub {
@@ -31,6 +36,10 @@ public class SseHub {
 
     private final Map<UUID, Set<SseEmitter>> staffSubscribers = new ConcurrentHashMap<>();
     private final Map<UUID, Map<UUID, Set<SseEmitter>>> ticketSubscribers = new ConcurrentHashMap<>();
+
+    // Kept as counters rather than walked on demand, so reading them stays O(1) however many are open.
+    private final AtomicInteger staffConnections = new AtomicInteger();
+    private final AtomicInteger ticketConnections = new AtomicInteger();
 
     private final AppProperties properties;
 
@@ -42,6 +51,7 @@ public class SseHub {
         SseEmitter emitter = newEmitter();
         Set<SseEmitter> emitters = staffSubscribers.computeIfAbsent(queueId, key -> new CopyOnWriteArraySet<>());
         emitters.add(emitter);
+        staffConnections.incrementAndGet();
         registerCleanup(emitter, () -> removeStaff(queueId, emitter));
         return emitter;
     }
@@ -52,8 +62,19 @@ public class SseHub {
                 .computeIfAbsent(queueId, key -> new ConcurrentHashMap<>())
                 .computeIfAbsent(ticketToken, key -> new CopyOnWriteArraySet<>())
                 .add(emitter);
+        ticketConnections.incrementAndGet();
         registerCleanup(emitter, () -> removeTicket(queueId, ticketToken, emitter));
         return emitter;
+    }
+
+    /** Staff board streams this instance is holding right now. */
+    public int staffConnections() {
+        return staffConnections.get();
+    }
+
+    /** Customer ticket streams this instance is holding right now. */
+    public int ticketConnections() {
+        return ticketConnections.get();
     }
 
     public boolean hasStaffSubscribers(UUID queueId) {
@@ -131,17 +152,23 @@ public class SseHub {
         emitter.onError(error -> cleanup.run());
     }
 
-    private void removeStaff(UUID queueId, SseEmitter emitter) {
+    // Package-private, not private: the emitter callbacks that normally invoke these are fired by the
+    // MVC async infrastructure, so a test has no other way to exercise the cleanup path.
+    void removeStaff(UUID queueId, SseEmitter emitter) {
         staffSubscribers.computeIfPresent(queueId, (key, emitters) -> {
-            emitters.remove(emitter);
+            if (emitters.remove(emitter)) {
+                staffConnections.decrementAndGet();
+            }
             return emitters.isEmpty() ? null : emitters;
         });
     }
 
-    private void removeTicket(UUID queueId, UUID ticketToken, SseEmitter emitter) {
+    void removeTicket(UUID queueId, UUID ticketToken, SseEmitter emitter) {
         ticketSubscribers.computeIfPresent(queueId, (key, byTicket) -> {
             byTicket.computeIfPresent(ticketToken, (token, emitters) -> {
-                emitters.remove(emitter);
+                if (emitters.remove(emitter)) {
+                    ticketConnections.decrementAndGet();
+                }
                 return emitters.isEmpty() ? null : emitters;
             });
             return byTicket.isEmpty() ? null : byTicket;

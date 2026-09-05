@@ -61,10 +61,11 @@
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
+    <!-- Compile scope, not runtime: the cross-instance fan-out in `realtime` uses PGConnection
+         and PGNotification directly, because LISTEN/NOTIFY has no JDBC-standard equivalent. -->
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
-      <scope>runtime</scope>
     </dependency>
 
     <dependency>

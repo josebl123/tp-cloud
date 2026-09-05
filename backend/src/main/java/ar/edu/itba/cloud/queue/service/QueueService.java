@@ -15,12 +15,18 @@ import ar.edu.itba.cloud.queue.service.command.CreateQueueCommand;
 import ar.edu.itba.cloud.queue.service.command.UpdateQueueCommand;
 import ar.edu.itba.cloud.queue.service.event.QueueChangedEvent;
 import ar.edu.itba.cloud.queue.service.model.PublicQueueView;
+import ar.edu.itba.cloud.queue.service.model.QueueBroadcast;
 import ar.edu.itba.cloud.queue.service.model.QueueEventView;
 import ar.edu.itba.cloud.queue.service.model.QueueSnapshot;
 import ar.edu.itba.cloud.queue.service.model.QueueView;
+import ar.edu.itba.cloud.queue.service.model.TicketView;
 import ar.edu.itba.cloud.queue.persistence.entity.ActorType;
 import java.time.Clock;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -37,11 +43,15 @@ public class QueueService {
 
     private static final int MAX_EVENTS = 100;
 
+    /** A place in the line that is no longer waiting but has not been given up either. */
+    private static final List<EntryStatus> IN_SERVICE = List.of(EntryStatus.CALLED, EntryStatus.SERVING);
+
     private final ServiceQueueRepository queueRepository;
     private final QueueEntryRepository entryRepository;
     private final EstablishmentRepository establishmentRepository;
     private final QueueEntryService entryService;
     private final GraceService graceService;
+    private final EstimationService estimationService;
     private final QueueViewFactory viewFactory;
     private final AccessGuard accessGuard;
     private final EventRecorder eventRecorder;
@@ -53,6 +63,7 @@ public class QueueService {
                         EstablishmentRepository establishmentRepository,
                         QueueEntryService entryService,
                         GraceService graceService,
+                        EstimationService estimationService,
                         QueueViewFactory viewFactory,
                         AccessGuard accessGuard,
                         EventRecorder eventRecorder,
@@ -63,6 +74,7 @@ public class QueueService {
         this.establishmentRepository = establishmentRepository;
         this.entryService = entryService;
         this.graceService = graceService;
+        this.estimationService = estimationService;
         this.viewFactory = viewFactory;
         this.accessGuard = accessGuard;
         this.eventRecorder = eventRecorder;
@@ -161,30 +173,101 @@ public class QueueService {
     /** The staff board. Expires overdue grace periods first so it always reflects the current line. */
     @Transactional
     public QueueSnapshot getSnapshot(UUID userId, UUID queueId) {
-        ServiceQueue queue = lock(queueId);
+        ServiceQueue queue = load(queueId);
+        // Authorise before expiring: a member of another establishment must not be able to drive
+        // side effects on this queue on their way to a 403.
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
-        if (graceService.expireDue(queue)) {
+        if (graceService.expireDueIfAny(queueId)) {
             publisher.publishEvent(new QueueChangedEvent(queueId));
         }
         return buildSnapshot(queue);
     }
 
-    /** Pure read, used to push the board to subscribers after a change has already been applied. */
+    /**
+     * Everything one change has to push, resolved in a single reading of the line.
+     *
+     * <p>Pure read: the change has already been applied and committed by the time this runs.
+     *
+     * <p>The board and every watching customer are derived from the same two lists, so a broadcast
+     * costs a fixed handful of queries however many people are watching. Deriving them one by one
+     * instead would re-read the whole waiting list once per watcher - quadratic in the length of the
+     * line, on the one connection every instance shares.
+     *
+     * @param withBoard    whether any staff member is watching the panel
+     * @param ticketTokens the customers currently watching their own ticket
+     */
     @Transactional(readOnly = true)
-    public QueueSnapshot readSnapshot(UUID queueId) {
-        return buildSnapshot(load(queueId));
+    public QueueBroadcast readBroadcast(UUID queueId, boolean withBoard, Set<UUID> ticketTokens) {
+        if (!withBoard && ticketTokens.isEmpty()) {
+            return QueueBroadcast.empty();
+        }
+
+        ServiceQueue queue = load(queueId);
+        List<QueueEntry> waiting = entryRepository
+                .findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queueId, EntryStatus.WAITING);
+        List<QueueEntry> inService = entryRepository
+                .findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(queueId, IN_SERVICE);
+        EstimationService.ServiceTimeEstimate estimate = estimationService.averageServiceTime(queue);
+
+        QueueSnapshot board = withBoard ? viewFactory.snapshot(queue, waiting, inService, estimate) : null;
+        return new QueueBroadcast(board, ticketViews(queue, waiting, inService, estimate, ticketTokens));
+    }
+
+    /**
+     * One ticket view per token, all read off the lists already in hand.
+     *
+     * <p>A customer's position <em>is</em> their index in the waiting list, so the list is walked once
+     * into a lookup table rather than searched once per ticket. Tokens still missing after that belong
+     * to people who have already left the line - they are fetched together, in one query.
+     */
+    private Map<UUID, TicketView> ticketViews(ServiceQueue queue, List<QueueEntry> waiting,
+                                              List<QueueEntry> inService,
+                                              EstimationService.ServiceTimeEstimate estimate,
+                                              Set<UUID> ticketTokens) {
+        if (ticketTokens.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<UUID, QueueEntry> byToken = HashMap.newHashMap(waiting.size() + inService.size());
+        Map<UUID, Integer> peopleAhead = HashMap.newHashMap(waiting.size());
+        for (int index = 0; index < waiting.size(); index++) {
+            QueueEntry entry = waiting.get(index);
+            byToken.put(entry.getTicketToken(), entry);
+            peopleAhead.put(entry.getTicketToken(), index);
+        }
+        for (QueueEntry entry : inService) {
+            byToken.put(entry.getTicketToken(), entry);
+        }
+
+        Set<UUID> departed = new HashSet<>(ticketTokens);
+        departed.removeAll(byToken.keySet());
+        if (!departed.isEmpty()) {
+            for (QueueEntry entry : entryRepository.findAllByTicketTokenIn(departed)) {
+                byToken.put(entry.getTicketToken(), entry);
+            }
+        }
+
+        Map<UUID, TicketView> views = HashMap.newHashMap(ticketTokens.size());
+        for (UUID token : ticketTokens) {
+            QueueEntry entry = byToken.get(token);
+            // A token can disappear between subscribing and broadcasting; that stream is about to close.
+            if (entry != null) {
+                views.put(token, viewFactory.ticketView(queue, entry, peopleAhead.get(token),
+                        inService.size(), estimate.duration()));
+            }
+        }
+        return views;
     }
 
     /** What a customer sees right after scanning the QR. No authentication, no personal data. */
     @Transactional
     public PublicQueueView publicView(UUID queueId) {
-        ServiceQueue queue = lock(queueId);
-        if (graceService.expireDue(queue)) {
+        if (graceService.expireDueIfAny(queueId)) {
             publisher.publishEvent(new QueueChangedEvent(queueId));
         }
+        ServiceQueue queue = load(queueId);
         int waiting = (int) entryRepository.countByQueueIdAndStatus(queueId, EntryStatus.WAITING);
-        int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId,
-                List.of(EntryStatus.CALLED, EntryStatus.SERVING));
+        int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId, IN_SERVICE);
         return viewFactory.publicView(queue, waiting, inService);
     }
 
@@ -205,7 +288,7 @@ public class QueueService {
         List<QueueEntry> waiting = entryRepository
                 .findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queue.getId(), EntryStatus.WAITING);
         List<QueueEntry> inService = entryRepository.findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(
-                queue.getId(), List.of(EntryStatus.CALLED, EntryStatus.SERVING));
+                queue.getId(), IN_SERVICE);
         return viewFactory.snapshot(queue, waiting, inService);
     }
 

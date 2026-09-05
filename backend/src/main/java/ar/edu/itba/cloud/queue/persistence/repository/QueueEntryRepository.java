@@ -31,6 +31,20 @@ public interface QueueEntryRepository extends JpaRepository<QueueEntry, UUID> {
     Optional<QueueEntry> findByIdWithQueue(@Param("id") UUID id);
 
     /**
+     * Every entry behind a set of ticket tokens, in one round trip.
+     *
+     * <p>Used when pushing an update to everyone watching a queue: the customers still in the line
+     * come from the line itself, and this fills in only the ones that already left it.
+     */
+    @Query("""
+            select e from QueueEntry e
+            join fetch e.queue q
+            join fetch q.establishment
+            where e.ticketToken in :tokens
+            """)
+    List<QueueEntry> findAllByTicketTokenIn(@Param("tokens") Collection<UUID> tokens);
+
+    /**
      * Resolves which queue an entry belongs to without loading it.
      *
      * <p>Used to take the queue lock <em>before</em> reading the entry, so the entry is never read in
@@ -55,6 +69,16 @@ public interface QueueEntryRepository extends JpaRepository<QueueEntry, UUID> {
 
     /** Entries whose grace period has run out and still sit in CALLED. */
     List<QueueEntry> findAllByQueueIdAndStatusAndGraceExpiresAtLessThanEqual(
+            UUID queueId, EntryStatus status, Instant deadline);
+
+    /**
+     * Whether anything in this queue is past its deadline.
+     *
+     * <p>Served by {@code ix_entry_grace}, and it takes no lock: this is what lets a read find out
+     * that it has nothing to expire - the overwhelmingly common case - without serialising against
+     * every other reader of the same queue.
+     */
+    boolean existsByQueueIdAndStatusAndGraceExpiresAtLessThanEqual(
             UUID queueId, EntryStatus status, Instant deadline);
 
     @Query("""
