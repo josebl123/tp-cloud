@@ -4,7 +4,7 @@ package ar.edu.itba.cloud.queue.persistence.entity;
 public enum NotificationType {
     /** Sent on join; carries the personal ticket link. */
     TICKET_CREATED,
-    /** The configured number of people ahead has been reached. */
+    /** The configured number of groups scheduled ahead has been reached. */
     APPROACHING_POSITION,
     /** The configured estimated waiting minutes has been reached. */
     APPROACHING_TIME,

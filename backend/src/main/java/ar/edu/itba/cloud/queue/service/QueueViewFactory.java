@@ -4,11 +4,14 @@ import ar.edu.itba.cloud.queue.config.AppProperties;
 import ar.edu.itba.cloud.queue.persistence.entity.EntryStatus;
 import ar.edu.itba.cloud.queue.persistence.entity.QueueEntry;
 import ar.edu.itba.cloud.queue.persistence.entity.ServiceQueue;
+import ar.edu.itba.cloud.queue.persistence.repository.QueueLaneRepository;
 import ar.edu.itba.cloud.queue.service.model.EntryView;
 import ar.edu.itba.cloud.queue.service.model.PublicQueueView;
 import ar.edu.itba.cloud.queue.service.model.QueueSnapshot;
 import ar.edu.itba.cloud.queue.service.model.QueueSummary;
 import ar.edu.itba.cloud.queue.service.model.QueueView;
+import ar.edu.itba.cloud.queue.service.model.QueueLaneView;
+import ar.edu.itba.cloud.queue.service.model.QueueLaneSnapshot;
 import ar.edu.itba.cloud.queue.service.model.TicketView;
 import java.time.Clock;
 import java.time.Duration;
@@ -28,11 +31,14 @@ public class QueueViewFactory {
     private final AppProperties properties;
     private final EstimationService estimationService;
     private final Clock clock;
+    private final QueueLaneRepository laneRepository;
 
-    public QueueViewFactory(AppProperties properties, EstimationService estimationService, Clock clock) {
+    public QueueViewFactory(AppProperties properties, EstimationService estimationService, Clock clock,
+                            QueueLaneRepository laneRepository) {
         this.properties = properties;
         this.estimationService = estimationService;
         this.clock = clock;
+        this.laneRepository = laneRepository;
     }
 
     public QueueView queueView(ServiceQueue queue) {
@@ -51,10 +57,11 @@ public class QueueViewFactory {
                 queue.getMoveBackPositions(),
                 queue.getNotifyAtPosition(),
                 queue.getNotifyAtMinutes(),
-                queue.isRequirePartySize(),
                 properties.joinUrl(queue.getId()),
                 queue.getCreatedAt(),
-                queue.getUpdatedAt());
+                queue.getUpdatedAt(), queue.getArchivedAt(), laneRepository.findAllByQueueIdOrderByPriorityAscMinPartySizeAsc(queue.getId()).stream()
+                        .map(l -> new QueueLaneView(l.getId(), l.getName(), l.getMinPartySize(), l.getMaxPartySize(), l.getPriority(),
+                        l.getCapacityMode(), l.getMaxSize(), l.getTimeFactor(), l.isActive())).toList(), queue.getCallStrategy());
     }
 
     public QueueSummary summary(ServiceQueue queue) {
@@ -80,18 +87,16 @@ public class QueueViewFactory {
     public QueueSnapshot snapshot(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService,
                                   EstimationService.ServiceTimeEstimate estimate) {
         int inServiceCount = inService.size();
-
-        List<EntryView> waitingViews = new ArrayList<>(waiting.size());
-        for (int index = 0; index < waiting.size(); index++) {
-            waitingViews.add(entryView(waiting.get(index), index, inServiceCount, queue, estimate.duration()));
-        }
-
-        List<EntryView> inServiceViews = inService.stream()
-                .map(entry -> entryView(entry, null, inServiceCount, queue, estimate.duration()))
+        // One simulation for the whole board. Running estimate() per row would replay the entire
+        // schedule once for every person on the line, which is quadratic in its length.
+        var simulations = estimationService.simulateAll(queue, waiting, inService, estimate.duration());
+        List<EntryView> waitingViews = waiting.stream()
+                .map(entry -> entryView(entry, simulations.get(entry.getId()), inServiceCount))
                 .toList();
 
-        int newEntryEta = EstimationService.toMinutes(
-                estimationService.estimateWait(queue, waiting.size(), inServiceCount, estimate.duration()));
+        List<EntryView> inServiceViews = inService.stream()
+                .map(entry -> staticEntryView(entry, inServiceCount))
+                .toList();
 
         return new QueueSnapshot(
                 queueView(queue),
@@ -99,20 +104,20 @@ public class QueueViewFactory {
                 inServiceViews,
                 waiting.size(),
                 inServiceCount,
-                newEntryEta,
                 EstimationService.toMinutes(estimate.duration()),
                 estimate.usingDefault(),
-                clock.instant());
+                clock.instant(), laneSnapshots(queue, waiting, inService, estimate));
     }
 
-    /**
-     * @param peopleAhead number of customers ahead, or null when the entry no longer waits
-     */
-    public EntryView entryView(QueueEntry entry, Integer peopleAhead, int inServiceCount,
-                               ServiceQueue queue, Duration averageServiceTime) {
-        Integer position = peopleAhead == null ? null : peopleAhead + 1;
-        Integer eta = peopleAhead == null ? null : EstimationService.toMinutes(
-                estimationService.estimateWait(queue, peopleAhead, inServiceCount, averageServiceTime));
+    public EntryView entryView(QueueEntry entry, EstimationService.Simulation simulation) {
+        return entryView(entry, simulation, simulation.groupsInService());
+    }
+
+    private EntryView entryView(QueueEntry entry, EstimationService.Simulation simulation, int groupsInService) {
+        Integer lanePosition = simulation == null ? null : simulation.lanePosition();
+        Integer laneAhead = simulation == null ? null : simulation.laneGroupsAhead();
+        Integer globalAhead = simulation == null ? null : simulation.globalWaitingGroupsAhead();
+        Integer eta = simulation == null ? null : EstimationService.toMinutes(simulation.estimatedWait());
 
         return new EntryView(
                 entry.getId(),
@@ -123,8 +128,10 @@ public class QueueViewFactory {
                 entry.getCustomerPhone(),
                 entry.getPartySize(),
                 entry.getStatus(),
-                position,
-                peopleAhead,
+                lanePosition,
+                laneAhead,
+                globalAhead,
+                groupsInService,
                 eta,
                 entry.getNoShowCount(),
                 entry.getJoinedAt(),
@@ -132,15 +139,20 @@ public class QueueViewFactory {
                 entry.getServingStartedAt(),
                 entry.getFinishedAt(),
                 entry.getGraceExpiresAt(),
-                graceSecondsRemaining(entry));
+                graceSecondsRemaining(entry), entry.getLane() == null ? null : entry.getLane().getId(),
+                entry.getLane() == null ? null : entry.getLane().getName());
     }
 
-    public TicketView ticketView(QueueEntry entry, Integer peopleAhead, int inServiceCount,
-                                 Duration averageServiceTime) {
+    public EntryView staticEntryView(QueueEntry entry, int groupsInService) {
+        return entryView(entry, null, groupsInService);
+    }
+
+    public TicketView ticketView(QueueEntry entry, EstimationService.Simulation simulation) {
         ServiceQueue queue = entry.getQueue();
-        Integer position = peopleAhead == null ? null : peopleAhead + 1;
-        Integer eta = peopleAhead == null ? null : EstimationService.toMinutes(
-                estimationService.estimateWait(queue, peopleAhead, inServiceCount, averageServiceTime));
+        Integer lanePosition = simulation == null ? null : simulation.lanePosition();
+        Integer laneAhead = simulation == null ? null : simulation.laneGroupsAhead();
+        Integer globalAhead = simulation == null ? null : simulation.globalWaitingGroupsAhead();
+        Integer eta = simulation == null ? null : EstimationService.toMinutes(simulation.estimatedWait());
 
         return new TicketView(
                 entry.getTicketToken(),
@@ -148,8 +160,10 @@ public class QueueViewFactory {
                 entry.getCustomerName(),
                 entry.getPartySize(),
                 entry.getStatus(),
-                position,
-                peopleAhead,
+                lanePosition,
+                laneAhead,
+                globalAhead,
+                simulation == null ? 0 : simulation.groupsInService(),
                 eta,
                 entry.getNoShowCount(),
                 entry.getJoinedAt(),
@@ -158,13 +172,12 @@ public class QueueViewFactory {
                 entry.getGraceExpiresAt(),
                 graceSecondsRemaining(entry),
                 summary(queue),
-                properties.ticketUrl(entry.getTicketToken()));
+                properties.ticketUrl(entry.getTicketToken()),
+                entry.getLane() == null ? null : entry.getLane().getId(),
+                entry.getLane() == null ? null : entry.getLane().getName());
     }
 
     public PublicQueueView publicView(ServiceQueue queue, int waitingCount, int inServiceCount) {
-        EstimationService.ServiceTimeEstimate estimate = estimationService.averageServiceTime(queue);
-        int eta = EstimationService.toMinutes(
-                estimationService.estimateWait(queue, waitingCount, inServiceCount, estimate.duration()));
         boolean full = queue.getMaxSize() != null && waitingCount + inServiceCount >= queue.getMaxSize();
 
         return new PublicQueueView(
@@ -176,9 +189,8 @@ public class QueueViewFactory {
                 queue.acceptsNewEntries() && !full,
                 full,
                 waitingCount,
-                eta,
-                queue.isRequirePartySize(),
-                queue.getMaxSize());
+                queue.getMaxSize(), laneRepository.findAllByQueueIdOrderByPriorityAscMinPartySizeAsc(queue.getId()).stream()
+                        .filter(l -> l.isActive()).map(l -> new QueueLaneView(l.getId(), l.getName(), l.getMinPartySize(), l.getMaxPartySize(), l.getPriority(), l.getCapacityMode(), l.getMaxSize(), l.getTimeFactor(), l.isActive())).toList());
     }
 
     private Long graceSecondsRemaining(QueueEntry entry) {
@@ -188,4 +200,26 @@ public class QueueViewFactory {
         long seconds = Duration.between(clock.instant(), entry.getGraceExpiresAt()).toSeconds();
         return Math.max(0L, seconds);
     }
+
+    private static boolean sameLane(QueueEntry a, QueueEntry b) {
+        return a.getLane() == null ? b.getLane() == null : a.getLane().getId().equals(b.getLane().getId());
+    }
+
+    private List<QueueLaneSnapshot> laneSnapshots(ServiceQueue queue, List<QueueEntry> waiting,
+                                                   List<QueueEntry> inService, EstimationService.ServiceTimeEstimate base) {
+        return laneRepository.findAllByQueueIdOrderByPriorityAscMinPartySizeAsc(queue.getId()).stream().map(lane -> {
+            var w = waiting.stream().filter(e -> lane.getId().equals(e.getLane().getId())).toList();
+            var s = inService.stream().filter(e -> lane.getId().equals(e.getLane().getId())).toList();
+            int used = java.util.stream.Stream.concat(w.stream(), s.stream()).mapToInt(e -> lane.getCapacityMode() == ar.edu.itba.cloud.queue.persistence.entity.LaneCapacityMode.PERSONS ? e.getPartySize() : 1).sum();
+            List<EntryView> laneWaiting = new ArrayList<>(w.size());
+            for (QueueEntry entry : w) {
+                laneWaiting.add(entryView(entry, estimationService.estimate(queue, waiting, inService, entry, base.duration())));
+            }
+            return new QueueLaneSnapshot(new QueueLaneView(lane.getId(), lane.getName(), lane.getMinPartySize(), lane.getMaxPartySize(), lane.getPriority(), lane.getCapacityMode(), lane.getMaxSize(), lane.getTimeFactor(), lane.isActive()),
+                    laneWaiting,
+                    s.stream().map(e -> staticEntryView(e, s.size())).toList(), w.size(),
+                    w.stream().mapToInt(QueueEntry::getPartySize).sum(), used, lane.getMaxSize());
+        }).toList();
+    }
+
 }

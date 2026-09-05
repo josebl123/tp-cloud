@@ -1,6 +1,7 @@
 package ar.edu.itba.cloud.queue.service;
 
 import ar.edu.itba.cloud.queue.exception.NotFoundException;
+import ar.edu.itba.cloud.queue.exception.ConflictException;
 import ar.edu.itba.cloud.queue.exception.ValidationException;
 import ar.edu.itba.cloud.queue.realtime.RealtimeBus;
 import ar.edu.itba.cloud.queue.persistence.entity.Establishment;
@@ -9,6 +10,7 @@ import ar.edu.itba.cloud.queue.persistence.entity.EventType;
 import ar.edu.itba.cloud.queue.persistence.entity.QueueEntry;
 import ar.edu.itba.cloud.queue.persistence.entity.QueueStatus;
 import ar.edu.itba.cloud.queue.persistence.entity.ServiceQueue;
+import ar.edu.itba.cloud.queue.persistence.entity.SupportedLocale;
 import ar.edu.itba.cloud.queue.persistence.repository.EstablishmentRepository;
 import ar.edu.itba.cloud.queue.persistence.repository.QueueEntryRepository;
 import ar.edu.itba.cloud.queue.persistence.repository.ServiceQueueRepository;
@@ -17,6 +19,8 @@ import ar.edu.itba.cloud.queue.service.command.UpdateQueueCommand;
 import ar.edu.itba.cloud.queue.service.model.PublicQueueView;
 import ar.edu.itba.cloud.queue.service.model.QueueBroadcast;
 import ar.edu.itba.cloud.queue.service.model.QueueEventView;
+import ar.edu.itba.cloud.queue.service.model.QueueAvailabilityView;
+import ar.edu.itba.cloud.queue.service.model.QueueLaneView;
 import ar.edu.itba.cloud.queue.service.model.QueueSnapshot;
 import ar.edu.itba.cloud.queue.service.model.QueueView;
 import ar.edu.itba.cloud.queue.service.model.TicketView;
@@ -52,6 +56,7 @@ public class QueueService {
     private final EventRecorder eventRecorder;
     private final RealtimeBus realtimeBus;
     private final Clock clock;
+    private final QueueLaneService laneService;
 
     public QueueService(ServiceQueueRepository queueRepository,
                         QueueEntryRepository entryRepository,
@@ -63,7 +68,8 @@ public class QueueService {
                         AccessGuard accessGuard,
                         EventRecorder eventRecorder,
                         RealtimeBus realtimeBus,
-                        Clock clock) {
+                        Clock clock,
+                        QueueLaneService laneService) {
         this.queueRepository = queueRepository;
         this.entryRepository = entryRepository;
         this.establishmentRepository = establishmentRepository;
@@ -75,6 +81,7 @@ public class QueueService {
         this.eventRecorder = eventRecorder;
         this.realtimeBus = realtimeBus;
         this.clock = clock;
+        this.laneService = laneService;
     }
 
     @Transactional
@@ -87,6 +94,7 @@ public class QueueService {
         applyCreate(queue, command);
         validate(queue);
         queueRepository.save(queue);
+        laneService.defaultLane(queue, clock.instant());
 
         eventRecorder.record(queue.getId(), null, EventType.QUEUE_CREATED, ActorType.STAFF, userId,
                 "name=%s".formatted(queue.getName()));
@@ -96,7 +104,7 @@ public class QueueService {
     @Transactional(readOnly = true)
     public List<QueueView> listForEstablishment(UUID userId, UUID establishmentId) {
         accessGuard.requireMember(userId, establishmentId);
-        return queueRepository.findAllByEstablishmentIdOrderByNameAsc(establishmentId).stream()
+        return queueRepository.findAllByEstablishmentIdAndArchivedAtIsNullOrderByNameAsc(establishmentId).stream()
                 .map(viewFactory::queueView)
                 .toList();
     }
@@ -105,6 +113,7 @@ public class QueueService {
     public QueueView get(UUID userId, UUID queueId) {
         ServiceQueue queue = load(queueId);
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
         return viewFactory.queueView(queue);
     }
 
@@ -112,6 +121,7 @@ public class QueueService {
     public QueueView update(UUID userId, UUID queueId, UpdateQueueCommand command) {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireOwner(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) throw new ConflictException("QUEUE_ARCHIVED", "This queue is archived");
 
         applyUpdate(queue, command);
         validate(queue);
@@ -134,6 +144,7 @@ public class QueueService {
     public QueueView changeStatus(UUID userId, UUID queueId, QueueStatus status) {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) throw new ConflictException("QUEUE_ARCHIVED", "This queue is archived");
 
         QueueStatus previous = queue.getStatus();
         if (previous == status) {
@@ -160,9 +171,15 @@ public class QueueService {
         ServiceQueue queue = lock(queueId);
         accessGuard.requireOwner(userId, queue.getEstablishment().getId());
 
-        eventRecorder.record(queueId, null, EventType.QUEUE_DELETED, ActorType.STAFF, userId,
+        graceService.expireDue(queue);
+        queue.setStatus(QueueStatus.CLOSED);
+        entryService.releaseAllActive(queue, userId);
+        queue.setArchivedAt(clock.instant());
+        queue.setUpdatedAt(clock.instant());
+        queueRepository.save(queue);
+        eventRecorder.record(queueId, null, EventType.QUEUE_ARCHIVED, ActorType.STAFF, userId,
                 "name=%s".formatted(queue.getName()));
-        queueRepository.delete(queue);
+        realtimeBus.publish(queueId);
     }
 
     /** The staff board. Expires overdue grace periods first so it always reflects the current line. */
@@ -172,6 +189,9 @@ public class QueueService {
         // Authorise before expiring: a member of another establishment must not be able to drive side
         // effects on this queue on their way to a 403.
         accessGuard.requireMember(userId, queue.getEstablishment().getId());
+        if (queue.getArchivedAt() != null) {
+            throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
+        }
         if (graceService.expireDueIfAny(queueId)) {
             realtimeBus.publish(queueId);
         }
@@ -215,12 +235,13 @@ public class QueueService {
             return new QueueBroadcast(snapshot, Map.of());
         }
 
+        // One simulation for the whole line, shared by every watcher.
+        Map<UUID, EstimationService.Simulation> simulations =
+                estimationService.simulateAll(queue, waiting, inService, estimate.duration());
+
         Map<UUID, QueueEntry> byToken = new HashMap<>();
-        Map<UUID, Integer> peopleAheadByToken = new HashMap<>();
-        for (int index = 0; index < waiting.size(); index++) {
-            QueueEntry entry = waiting.get(index);
+        for (QueueEntry entry : waiting) {
             byToken.put(entry.getTicketToken(), entry);
-            peopleAheadByToken.put(entry.getTicketToken(), index);
         }
         for (QueueEntry entry : inService) {
             byToken.put(entry.getTicketToken(), entry);
@@ -239,8 +260,8 @@ public class QueueService {
                 // Removed since the subscription opened; that client falls back to polling.
                 continue;
             }
-            tickets.put(token, viewFactory.ticketView(
-                    entry, peopleAheadByToken.get(token), inService.size(), estimate.duration()));
+            // Absent for anyone already called or being served: they no longer hold a place.
+            tickets.put(token, viewFactory.ticketView(entry, simulations.get(entry.getId())));
         }
         return new QueueBroadcast(snapshot, tickets);
     }
@@ -248,14 +269,61 @@ public class QueueService {
     /** What a customer sees right after scanning the QR. No authentication, no personal data. */
     @Transactional
     public PublicQueueView publicView(UUID queueId) {
+        ServiceQueue queue = load(queueId);
+        if (queue.getArchivedAt() != null) {
+            throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
+        }
         if (graceService.expireDueIfAny(queueId)) {
             realtimeBus.publish(queueId);
         }
-        ServiceQueue queue = load(queueId);
         int waiting = (int) entryRepository.countByQueueIdAndStatus(queueId, EntryStatus.WAITING);
         int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId,
                 List.of(EntryStatus.CALLED, EntryStatus.SERVING));
         return viewFactory.publicView(queue, waiting, inService);
+    }
+
+    /** Quotes the exact group size a customer entered without reserving a place. */
+    @Transactional
+    public QueueAvailabilityView availability(UUID queueId, int partySize) {
+        if (partySize < 1) {
+            throw new ValidationException("INVALID_PARTY_SIZE", "partySize must be at least 1");
+        }
+        ServiceQueue queue = lock(queueId);
+        if (queue.getArchivedAt() != null) {
+            throw new NotFoundException("QUEUE_ARCHIVED", "This queue is archived");
+        }
+        graceService.expireDue(queue);
+        List<QueueEntry> waiting = entryRepository
+                .findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queueId, EntryStatus.WAITING);
+        long active = entryRepository.countByQueueIdAndStatusIn(queueId, EntryStatus.active());
+        try {
+            var lane = laneService.select(queue, partySize);
+            boolean queueFull = queue.getMaxSize() != null && active >= queue.getMaxSize();
+            boolean laneFull = !laneService.hasCapacity(lane, partySize);
+            List<QueueEntry> inService = entryRepository.findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(queueId,
+                    List.of(EntryStatus.CALLED, EntryStatus.SERVING));
+            // Never persisted and never notified, so its language is irrelevant.
+            QueueEntry candidate = new QueueEntry(queue, lane, UUID.randomUUID(), 0, Long.MAX_VALUE,
+                    "quote", null, null, partySize, SupportedLocale.DEFAULT, java.time.Instant.EPOCH);
+            List<QueueEntry> simulatedWaiting = new java.util.ArrayList<>(waiting);
+            simulatedWaiting.add(candidate);
+            EstimationService.Simulation simulation = estimationService.estimate(queue, simulatedWaiting, inService,
+                    candidate, estimationService.averageServiceTime(queue).duration());
+            QueueLaneView laneView = new QueueLaneView(lane.getId(), lane.getName(), lane.getMinPartySize(),
+                    lane.getMaxPartySize(), lane.getPriority(), lane.getCapacityMode(), lane.getMaxSize(),
+                    lane.getTimeFactor(), lane.isActive());
+            boolean available = queue.acceptsNewEntries() && !queueFull && !laneFull;
+            return new QueueAvailabilityView(laneView, true, available, queueFull, laneFull,
+                    simulation.lanePosition(), simulation.laneGroupsAhead(), simulation.globalWaitingGroupsAhead(),
+                    simulation.groupsInService(), EstimationService.toMinutes(simulation.estimatedWait()));
+        } catch (ConflictException exception) {
+            if (!"NO_COMPATIBLE_LANE".equals(exception.getCode())) {
+                throw exception;
+            }
+            int inService = (int) entryRepository.countByQueueIdAndStatusIn(queueId,
+                    List.of(EntryStatus.CALLED, EntryStatus.SERVING));
+            return new QueueAvailabilityView(null, false, false, false, false, null, null, waiting.size(), inService, null);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -299,9 +367,7 @@ public class QueueService {
         }
         queue.setNotifyAtPosition(command.notifyAtPosition());
         queue.setNotifyAtMinutes(command.notifyAtMinutes());
-        if (command.requirePartySize() != null) {
-            queue.setRequirePartySize(command.requirePartySize());
-        }
+        if (command.callStrategy() != null) queue.setCallStrategy(command.callStrategy());
     }
 
     private void applyUpdate(ServiceQueue queue, UpdateQueueCommand command) {
@@ -341,9 +407,7 @@ public class QueueService {
         } else if (command.notifyAtMinutes() != null) {
             queue.setNotifyAtMinutes(command.notifyAtMinutes());
         }
-        if (command.requirePartySize() != null) {
-            queue.setRequirePartySize(command.requirePartySize());
-        }
+        if (command.callStrategy() != null) queue.setCallStrategy(command.callStrategy());
     }
 
     /** Mirrors the database check constraints, so a bad value fails as a 400 rather than a 500. */

@@ -69,11 +69,11 @@ public class DevDataSeeder implements ApplicationRunner {
 
         QueueView tables = queueService.create(ownerId, establishmentId, new CreateQueueCommand(
                 "Tables", "Main dining room queue", 3, 25, null, 120,
-                NoShowPolicy.MOVE_BACK, 2, 3, 10, true));
+                NoShowPolicy.MOVE_BACK, 2, 3, 10, null));
 
         queueService.create(ownerId, establishmentId, new CreateQueueCommand(
                 "Take away", "Counter pickup for online orders", 1, 5, 20, 60,
-                NoShowPolicy.MOVE_TO_END, 3, 2, 5, false));
+                NoShowPolicy.MOVE_TO_END, 3, 2, 5, null));
 
         entryService.join(tables.id(), new JoinCommand("Ana Perez", "ana@demo.q", null, 2, SupportedLocale.ES));
         entryService.join(tables.id(), new JoinCommand("Bruno Diaz", null, "+541100000001", 4, SupportedLocale.ES));

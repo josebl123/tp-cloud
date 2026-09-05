@@ -86,6 +86,11 @@ export default function QueueBoardPage() {
     void run(() => api.queues.call(queueId as string))
   }
 
+  const callLane = (laneId: string) => {
+    setCalling(true)
+    void run(() => api.queues.call(queueId as string, undefined, laneId))
+  }
+
   const setEntryStatus = (entry: EntryView, status: EntryStatus) =>
     void run(() => api.entries.setStatus(entry.id, status), entry.id)
 
@@ -157,17 +162,32 @@ export default function QueueBoardPage() {
           value={`${board.averageServiceMinutes} min`}
           hint={board.usingDefaultServiceTime ? t('board.configuredEstimate') : t('board.measured')}
         />
-        <Stat
-          label={t('board.statNewArrival')}
-          value={formatWaitNeutral(t, board.estimatedWaitMinutesForNewEntry)}
-        />
+        <Stat label={t('board.activeLanes')} value={board.lanes?.filter((lane) => lane.lane.active).length ?? 0} />
       </div>
 
       <Button size="lg" block onClick={callNext} loading={calling} disabled={closed || board.waitingCount === 0}>
         {board.waitingCount === 0 ? t('board.nobodyWaiting') : t('board.callNext')}
       </Button>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      {board.lanes?.length > 1 ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          {board.lanes.filter((lane) => lane.lane.active).map((lane) => (
+            <Card key={lane.lane.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div><h2 className="font-display text-lg font-semibold">{lane.lane.name}</h2><p className="text-sm text-muted">{lane.lane.minPartySize}–{lane.lane.maxPartySize ?? '∞'} people · {lane.waitingGroups} waiting · {lane.capacityUsed}/{lane.capacityMaximum ?? '∞'} {lane.lane.capacityMode.toLowerCase()}</p></div>
+                <Button size="sm" onClick={() => callLane(lane.lane.id)} loading={calling} disabled={closed || lane.waiting.length === 0}>Call next</Button>
+              </div>
+              <div className="mt-4 space-y-2">
+                {lane.inService.map((entry) => <ServingCard key={entry.id} entry={entry} busy={busyEntry === entry.id} onStatus={(status) => setEntryStatus(entry, status)} />)}
+                {lane.waiting.map((entry) => <WaitingRow key={entry.id} entry={entry} disabled={closed} busy={busyEntry === entry.id} onStatus={(status) => setEntryStatus(entry, status)} />)}
+                {lane.waiting.length === 0 && lane.inService.length === 0 ? <p className="text-sm text-faint">No entries in this lane.</p> : null}
+              </div>
+            </Card>
+          ))}
+        </div>
+      ) : null}
+
+      {board.lanes?.length <= 1 ? <div className="grid gap-6 lg:grid-cols-2">
         <section>
           <h2 className="mb-3 font-display text-lg font-semibold tracking-tight">
             {t('board.nowServing')}{' '}
@@ -210,7 +230,7 @@ export default function QueueBoardPage() {
             </ol>
           )}
         </section>
-      </div>
+      </div> : null}
 
       <section>
         <button
@@ -339,7 +359,7 @@ function WaitingRow({
   return (
     <li className="flex items-center gap-3 rounded-xl border border-line bg-surface px-3 py-2.5">
       <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-raised font-display text-base font-semibold tnum">
-        {entry.position}
+        {entry.lanePosition}
       </span>
 
       <div className="min-w-0 flex-1">

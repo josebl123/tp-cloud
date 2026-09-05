@@ -4,6 +4,10 @@ import ar.edu.itba.cloud.queue.persistence.entity.NotificationChannel;
 import ar.edu.itba.cloud.queue.persistence.entity.NotificationRecord;
 import ar.edu.itba.cloud.queue.persistence.entity.NotificationStatus;
 import ar.edu.itba.cloud.queue.persistence.repository.NotificationRecordRepository;
+import ar.edu.itba.cloud.queue.service.EventRecorder;
+import ar.edu.itba.cloud.queue.persistence.entity.EventType;
+import ar.edu.itba.cloud.queue.persistence.entity.QueueEntry;
+import ar.edu.itba.cloud.queue.persistence.repository.QueueEntryRepository;
 import ar.edu.itba.cloud.queue.service.event.NotificationQueuedEvent;
 import java.time.Clock;
 import java.util.List;
@@ -15,6 +19,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionalEventListener;
+import org.springframework.scheduling.annotation.Scheduled;
 
 /**
  * Delivers queued notifications once the change that caused them is durable.
@@ -31,19 +36,30 @@ public class NotificationDispatcher {
     private final NotificationRecordRepository repository;
     private final List<NotificationSender> senders;
     private final Clock clock;
+    private final EventRecorder eventRecorder;
+    private final QueueEntryRepository entryRepository;
 
     public NotificationDispatcher(NotificationRecordRepository repository,
                                   List<NotificationSender> senders,
-                                  Clock clock) {
+                                  Clock clock, EventRecorder eventRecorder, QueueEntryRepository entryRepository) {
         this.repository = repository;
         this.senders = senders;
         this.clock = clock;
+        this.eventRecorder = eventRecorder;
+        this.entryRepository = entryRepository;
     }
 
     @TransactionalEventListener(fallbackExecution = true)
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void onNotificationQueued(NotificationQueuedEvent event) {
         deliver(event.notificationId());
+    }
+
+    @Scheduled(fixedDelayString = "${q.notifications.retry-interval:1m}")
+    @Transactional
+    public void retryFailed() {
+        repository.findTop50ByStatusOrderByCreatedAtAsc(NotificationStatus.FAILED)
+                .forEach(record -> { record.markPending(); repository.save(record); deliver(record.getId()); });
     }
 
     private void deliver(UUID notificationId) {
@@ -56,10 +72,14 @@ public class NotificationDispatcher {
         try {
             sender.send(new NotificationMessage(record.getDestination(), record.getSubject(), record.getBody()));
             record.markSent(clock.instant());
+            entryRepository.findByIdWithQueue(record.getEntryId()).ifPresent(e -> eventRecorder.recordBySystem(
+                    e.getQueue().getId(), e.getId(), EventType.NOTIFICATION_SENT, "notificationId=%s".formatted(record.getId())));
         } catch (Exception ex) {
             log.warn("Failed to deliver notification {} over {}: {}",
                     notificationId, record.getChannel(), ex.getMessage());
             record.markFailed(ex.getMessage());
+            entryRepository.findByIdWithQueue(record.getEntryId()).ifPresent(e -> eventRecorder.recordBySystem(
+                    e.getQueue().getId(), e.getId(), EventType.NOTIFICATION_FAILED, "notificationId=%s".formatted(record.getId())));
         }
         repository.save(record);
     }

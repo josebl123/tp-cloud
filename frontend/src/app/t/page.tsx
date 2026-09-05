@@ -84,6 +84,7 @@ export default function TicketPage() {
           <h1 className="mt-0.5 truncate font-display text-2xl font-semibold tracking-tight">
             {ticket.queue.name}
           </h1>
+          {ticket.laneName ? <p className="mt-1 text-sm text-muted">Lane: {ticket.laneName}</p> : null}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <span className="rounded-full bg-raised px-2.5 py-1 text-xs font-medium text-muted tnum">
@@ -173,31 +174,37 @@ export default function TicketPage() {
 /** The waiting state: position enormous, everything else quiet. */
 function WaitingHero({ ticket }: { ticket: TicketView }) {
   const { t, tp } = useI18n()
-  const peopleAhead = ticket.peopleAhead ?? 0
-  const startAhead = useHighWaterMark(peopleAhead)
-  const progress = startAhead === 0 ? 1 : Math.min(1, (startAhead - peopleAhead) / startAhead)
+  const groupsAhead = ticket.globalWaitingGroupsAhead ?? 0
+  const startAhead = useHighWaterMark(groupsAhead)
+  const progress = startAhead === 0 ? 1 : Math.min(1, (startAhead - groupsAhead) / startAhead)
 
   return (
     <div className="animate-in">
       <div className="rounded-3xl border border-line bg-surface p-8 text-center shadow-soft">
         <div className="display-number text-[6.5rem] text-brand sm:text-[7.5rem]">
-          {ticket.position ?? '—'}
+          {groupsAhead}
         </div>
         <p className="mt-3 text-sm font-medium tracking-wide text-muted uppercase">
-          {t('ticket.yourPosition')}
+          {t('ticket.groupsScheduledBefore')}
         </p>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3">
+      <div className="mt-3 grid grid-cols-3 gap-3">
         <div className="rounded-2xl border border-line bg-surface p-5">
-          <div className="font-display text-3xl font-semibold tnum">{peopleAhead}</div>
-          <div className="mt-1 text-sm text-muted">{tp('ticket.peopleAhead', peopleAhead)}</div>
+          <div className="font-display text-3xl font-semibold tnum">{ticket.groupsInService}</div>
+          <div className="mt-1 text-sm text-muted">
+            {tp('ticket.groupsInService', ticket.groupsInService)}
+          </div>
         </div>
         <div className="rounded-2xl border border-line bg-surface p-5">
           <div className="font-display text-3xl font-semibold tnum">
             {formatWait(t, ticket.estimatedWaitMinutes)}
           </div>
           <div className="mt-1 text-sm text-muted">{t('ticket.estimatedWait')}</div>
+        </div>
+        <div className="rounded-2xl border border-line bg-surface p-5">
+          <div className="font-display text-3xl font-semibold tnum">{ticket.lanePosition ?? '—'}</div>
+          <div className="mt-1 text-sm text-muted">place in your lane</div>
         </div>
       </div>
 
@@ -210,9 +217,9 @@ function WaitingHero({ ticket }: { ticket: TicketView }) {
             />
           </div>
           <p className="mt-2 text-center text-xs text-faint">
-            {startAhead - peopleAhead === 0
+            {startAhead - groupsAhead === 0
               ? t('ticket.notMovedYet')
-              : tp('ticket.movedUp', startAhead - peopleAhead)}
+              : tp('ticket.movedUp', startAhead - groupsAhead)}
           </p>
         </div>
       ) : null}
@@ -328,4 +335,3 @@ function Shell({ children }: { children: React.ReactNode }) {
     </main>
   )
 }
-

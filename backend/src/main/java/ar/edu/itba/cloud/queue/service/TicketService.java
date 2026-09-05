@@ -75,20 +75,10 @@ public class TicketService {
 
     private TicketView build(ServiceQueue queue, QueueEntry entry) {
         Duration average = estimationService.averageServiceTime(queue).duration();
-        int inService = (int) entryRepository.countByQueueIdAndStatusIn(queue.getId(),
+        if (entry.getStatus() != EntryStatus.WAITING) return viewFactory.ticketView(entry, null);
+        List<QueueEntry> waiting = entryRepository.findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queue.getId(), EntryStatus.WAITING);
+        List<QueueEntry> inService = entryRepository.findAllByQueueIdAndStatusInOrderByOrderKeyAscJoinedAtAsc(queue.getId(),
                 List.of(EntryStatus.CALLED, EntryStatus.SERVING));
-
-        Integer peopleAhead = null;
-        if (entry.getStatus() == EntryStatus.WAITING) {
-            List<QueueEntry> waiting = entryRepository
-                    .findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(queue.getId(), EntryStatus.WAITING);
-            for (int index = 0; index < waiting.size(); index++) {
-                if (waiting.get(index).getId().equals(entry.getId())) {
-                    peopleAhead = index;
-                    break;
-                }
-            }
-        }
-        return viewFactory.ticketView(entry, peopleAhead, inService, average);
+        return viewFactory.ticketView(entry, estimationService.estimate(queue, waiting, inService, entry, average));
     }
 }

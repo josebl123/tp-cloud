@@ -28,7 +28,7 @@ class GracePeriodIntegrationTest extends AbstractIntegrationTest {
         JsonNode ana = readTicket(scenario.anaToken());
 
         assertThat(ana.get("status").asText()).isEqualTo("WAITING");
-        assertThat(ana.get("position").asInt()).isEqualTo(3);
+        assertThat(ana.get("lanePosition").asInt()).isEqualTo(3);
         assertThat(ana.get("noShowCount").asInt()).isEqualTo(1);
     }
 
@@ -41,7 +41,7 @@ class GracePeriodIntegrationTest extends AbstractIntegrationTest {
         JsonNode ana = readTicket(scenario.anaToken());
 
         assertThat(ana.get("status").asText()).isEqualTo("WAITING");
-        assertThat(ana.get("position").asInt()).isEqualTo(1);
+        assertThat(ana.get("lanePosition").asInt()).isEqualTo(1);
     }
 
     @Test
@@ -61,7 +61,7 @@ class GracePeriodIntegrationTest extends AbstractIntegrationTest {
         JsonNode reloaded = readTicket(ticketToken(ana));
 
         assertThat(reloaded.get("status").asText()).isEqualTo("WAITING");
-        assertThat(reloaded.get("position").asInt()).isEqualTo(2);
+        assertThat(reloaded.get("lanePosition").asInt()).isEqualTo(2);
 
         // And the rest of the line is still coherent around her.
         JsonNode board = board(owner, queueId);
@@ -120,7 +120,7 @@ class GracePeriodIntegrationTest extends AbstractIntegrationTest {
 
         setEntryStatus(scenario.owner(), anaEntryId, EntryStatus.NO_SHOW);
 
-        assertThat(readTicket(scenario.anaToken()).get("position").asInt()).isEqualTo(3);
+        assertThat(readTicket(scenario.anaToken()).get("lanePosition").asInt()).isEqualTo(3);
     }
 
     @Test

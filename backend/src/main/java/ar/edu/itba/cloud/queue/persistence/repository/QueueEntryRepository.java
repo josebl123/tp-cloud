@@ -64,9 +64,13 @@ public interface QueueEntryRepository extends JpaRepository<QueueEntry, UUID> {
 
     List<QueueEntry> findAllByQueueIdAndStatusOrderByOrderKeyAscJoinedAtAsc(UUID queueId, EntryStatus status);
 
+    List<QueueEntry> findAllByQueueIdAndLaneIdAndStatusIn(UUID queueId, UUID laneId, Collection<EntryStatus> statuses);
+    List<QueueEntry> findAllByQueueIdAndLaneIdAndStatusOrderByOrderKeyAscJoinedAtAsc(UUID queueId, UUID laneId, EntryStatus status);
+
     long countByQueueIdAndStatus(UUID queueId, EntryStatus status);
 
     long countByQueueIdAndStatusIn(UUID queueId, Collection<EntryStatus> statuses);
+    long countByLaneIdAndStatusIn(UUID laneId, Collection<EntryStatus> statuses);
 
     /** Entries whose grace period has run out and still sit in CALLED. */
     /**

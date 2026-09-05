@@ -34,7 +34,7 @@ class JoinValidationIntegrationTest extends AbstractIntegrationTest {
         JsonNode ticket = doPost("/api/v1/public/queues/%s/entries".formatted(queueId),
                 Map.of("name", "Bruno", "phone", "+5491100000000"), null, 201);
 
-        assertThat(ticket.get("position").asInt()).isEqualTo(1);
+        assertThat(ticket.get("lanePosition").asInt()).isEqualTo(1);
         JsonNode notifications = doGet(
                 "/api/v1/public/tickets/%s/notifications".formatted(ticketToken(ticket)), null, 200);
         assertThat(notifications.get(0).get("destination").asText()).isEqualTo("+5491100000000");
@@ -60,18 +60,24 @@ class JoinValidationIntegrationTest extends AbstractIntegrationTest {
         assertThat(problem.get("errors").has("email")).isTrue();
     }
 
+    /**
+     * Lanes are chosen by party size, so every entry needs one. Rejecting a join that omits it would
+     * narrow the product to restaurants - a pharmacy or a bank has no notion of a party - so one person
+     * is the default, and it lands in the unsegmented 1+ lane.
+     */
     @Test
-    @DisplayName("a queue that asks for the party size will not take a booking without it")
-    void enforcesPartySizeWhenRequired() throws Exception {
-        UUID queueId = openQueue("party", Map.of("requirePartySize", true));
+    @DisplayName("a booking without a party size is one person, not an error")
+    void defaultsPartySizeToOne() throws Exception {
+        UUID queueId = openQueue("party", Map.of());
 
-        JsonNode problem = doPost("/api/v1/public/queues/%s/entries".formatted(queueId),
-                Map.of("name", "Ana", "email", "ana@party.q"), null, 400);
-        assertThat(problem.get("code").asText()).isEqualTo("PARTY_SIZE_REQUIRED");
+        JsonNode alone = doPost("/api/v1/public/queues/%s/entries".formatted(queueId),
+                Map.of("name", "Ana", "email", "ana@party.q"), null, 201);
+        assertThat(alone.get("partySize").asInt()).isEqualTo(1);
+        assertThat(alone.get("laneName").asText()).isEqualTo("1+");
 
-        JsonNode ticket = doPost("/api/v1/public/queues/%s/entries".formatted(queueId),
-                Map.of("name", "Ana", "email", "ana@party.q", "partySize", 4), null, 201);
-        assertThat(ticket.get("partySize").asInt()).isEqualTo(4);
+        JsonNode group = doPost("/api/v1/public/queues/%s/entries".formatted(queueId),
+                Map.of("name", "Bruno", "email", "bruno@party.q", "partySize", 4), null, 201);
+        assertThat(group.get("partySize").asInt()).isEqualTo(4);
     }
 
     @Test

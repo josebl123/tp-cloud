@@ -5,6 +5,7 @@ import ar.edu.itba.cloud.queue.service.QrCodeService;
 import ar.edu.itba.cloud.queue.service.QueueEntryService;
 import ar.edu.itba.cloud.queue.service.QueueService;
 import ar.edu.itba.cloud.queue.service.model.PublicQueueView;
+import ar.edu.itba.cloud.queue.service.model.QueueAvailabilityView;
 import ar.edu.itba.cloud.queue.service.model.TicketView;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
@@ -54,6 +55,12 @@ public class PublicQueueController {
     @Operation(summary = "Queue landing page: how many are waiting and how long it looks like")
     public PublicQueueView get(@PathVariable UUID queueId) {
         return queueService.publicView(queueId);
+    }
+
+    @GetMapping("/{queueId}/availability")
+    @Operation(summary = "Quote availability and wait for a group size without joining")
+    public QueueAvailabilityView availability(@PathVariable UUID queueId, @RequestParam int partySize) {
+        return queueService.availability(queueId, partySize);
     }
 
     @GetMapping(value = "/{queueId}/qr", produces = MediaType.IMAGE_PNG_VALUE)

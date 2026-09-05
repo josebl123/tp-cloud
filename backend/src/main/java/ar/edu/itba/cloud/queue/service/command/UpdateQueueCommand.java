@@ -1,6 +1,7 @@
 package ar.edu.itba.cloud.queue.service.command;
 
 import ar.edu.itba.cloud.queue.persistence.entity.NoShowPolicy;
+import ar.edu.itba.cloud.queue.persistence.entity.CallStrategy;
 
 /**
  * Partial update. A null field means "leave unchanged", which is why {@code maxSize},
@@ -21,5 +22,4 @@ public record UpdateQueueCommand(
         boolean clearNotifyAtPosition,
         Integer notifyAtMinutes,
         boolean clearNotifyAtMinutes,
-        Boolean requirePartySize) {
-}
+        CallStrategy callStrategy) { }

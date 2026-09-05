@@ -105,7 +105,7 @@ had already left sends them to the end.
 | `GET` | `/public/queues/{queueId}` | The landing page after scanning the QR. |
 | `GET` | `/public/queues/{queueId}/qr?size=512` | `image/png`, ready to print. |
 | `POST` | `/public/queues/{queueId}/entries` | Join. → 201 + `Location` |
-| `GET` | `/public/tickets/{ticketToken}` | Position, people ahead, estimated wait. |
+| `GET` | `/public/tickets/{ticketToken}` | Policy-aware groups scheduled before the ticket, lane context and estimated wait. |
 | `DELETE` | `/public/tickets/{ticketToken}` | Leave the queue (recorded as `LEFT`, not deleted). |
 | `GET` | `/public/tickets/{ticketToken}/notifications` | |
 | `GET` | `/public/tickets/{ticketToken}/stream` | SSE. |

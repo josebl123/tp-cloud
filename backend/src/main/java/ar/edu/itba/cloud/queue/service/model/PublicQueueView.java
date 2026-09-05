@@ -13,7 +13,6 @@ public record PublicQueueView(
         boolean acceptingEntries,
         boolean full,
         int waitingCount,
-        Integer estimatedWaitMinutes,
-        boolean requirePartySize,
-        Integer maxSize) {
+        Integer maxSize,
+        java.util.List<QueueLaneView> lanes) {
 }

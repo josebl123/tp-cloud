@@ -114,7 +114,7 @@ class BroadcastFanOutIntegrationTest extends AbstractIntegrationTest {
         assertThat(broadcast.snapshot().waitingCount()).isEqualTo(6);
         // Efficiency must not have cost correctness: positions are still 1..6, one each.
         assertThat(broadcast.tickets().values())
-                .extracting(view -> view.position())
+                .extracting(view -> view.lanePosition())
                 .containsExactlyInAnyOrder(1, 2, 3, 4, 5, 6);
     }
 

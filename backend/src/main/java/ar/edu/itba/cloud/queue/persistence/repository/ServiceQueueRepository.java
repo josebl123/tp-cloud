@@ -13,6 +13,7 @@ import org.springframework.data.repository.query.Param;
 public interface ServiceQueueRepository extends JpaRepository<ServiceQueue, UUID> {
 
     List<ServiceQueue> findAllByEstablishmentIdOrderByNameAsc(UUID establishmentId);
+    List<ServiceQueue> findAllByEstablishmentIdAndArchivedAtIsNullOrderByNameAsc(UUID establishmentId);
 
     @Query("select q from ServiceQueue q join fetch q.establishment where q.id = :id")
     Optional<ServiceQueue> findByIdWithEstablishment(@Param("id") UUID id);

@@ -70,8 +70,9 @@ public class NotificationService {
     }
 
     /** Sent on join. This is the message that carries the personal follow-up link. */
-    public void ticketCreated(QueueEntry entry, int position, Integer estimatedWaitMinutes) {
+    public void ticketCreated(QueueEntry entry, EstimationService.Simulation simulation) {
         ServiceQueue queue = entry.getQueue();
+        Integer estimatedWaitMinutes = EstimationService.toMinutes(simulation.estimatedWait());
         String eta = estimatedWaitMinutes == null || estimatedWaitMinutes <= 0
                 ? text(entry, "eta.soon")
                 : text(entry, "eta.minutes", estimatedWaitMinutes);
@@ -83,7 +84,7 @@ public class NotificationService {
                         queue.getName(),
                         queue.getEstablishment().getName(),
                         entry.getTicketNumber(),
-                        position,
+                        simulation.lanePosition(),
                         eta,
                         properties.ticketUrl(entry.getTicketToken())));
     }
@@ -141,7 +142,7 @@ public class NotificationService {
      * @param waiting   the WAITING entries in service order
      * @param inService how many customers currently occupy a service station
      */
-    public void evaluateThresholds(ServiceQueue queue, List<QueueEntry> waiting, long inService,
+    public void evaluateThresholds(ServiceQueue queue, List<QueueEntry> waiting, List<QueueEntry> inService,
                                    Duration averageServiceTime) {
         Integer positionThreshold = queue.getNotifyAtPosition();
         Integer minutesThreshold = queue.getNotifyAtMinutes();
@@ -149,18 +150,17 @@ public class NotificationService {
             return;
         }
 
-        for (int index = 0; index < waiting.size(); index++) {
-            QueueEntry entry = waiting.get(index);
-            int peopleAhead = index;
-            int estimatedMinutes = EstimationService.toMinutes(
-                    estimationService.estimateWait(queue, peopleAhead, (int) inService, averageServiceTime));
+        for (QueueEntry entry : waiting) {
+            EstimationService.Simulation simulation = estimationService.estimate(queue, waiting, inService, entry, averageServiceTime);
+            int groupsAhead = simulation.globalWaitingGroupsAhead();
+            int estimatedMinutes = EstimationService.toMinutes(simulation.estimatedWait());
 
-            if (positionThreshold != null && peopleAhead <= positionThreshold) {
+            if (positionThreshold != null && groupsAhead <= positionThreshold) {
                 enqueue(entry, NotificationType.APPROACHING_POSITION,
                         text(entry, "approaching-position.subject", queue.getName()),
                         text(entry, "approaching-position.body",
                                 entry.getCustomerName(),
-                                peopleAhead,
+                                groupsAhead,
                                 queue.getName(),
                                 queue.getEstablishment().getName(),
                                 estimatedMinutes,
@@ -175,7 +175,7 @@ public class NotificationService {
                                 queue.getName(),
                                 queue.getEstablishment().getName(),
                                 estimatedMinutes,
-                                peopleAhead + 1,
+                                groupsAhead + 1,
                                 properties.ticketUrl(entry.getTicketToken())));
             }
         }

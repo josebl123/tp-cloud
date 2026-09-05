@@ -73,6 +73,34 @@ export default function LoginPage() {
         </Button>
       </form>
 
+      <div className="mt-6 rounded-xl border border-line bg-raised px-4 py-3 text-sm">
+        <p className="font-medium">Demo access</p>
+        <p className="mt-1 text-muted">Owner: owner@demo.q · Password: demo1234</p>
+        <p className="text-muted">Staff: staff@demo.q · Password: demo1234</p>
+        <div className="mt-3 flex gap-2">
+          <button
+            type="button"
+            className="text-brand hover:underline"
+            onClick={() => {
+              setEmail('owner@demo.q')
+              setPassword('demo1234')
+            }}
+          >
+            Use owner account
+          </button>
+          <button
+            type="button"
+            className="text-brand hover:underline"
+            onClick={() => {
+              setEmail('staff@demo.q')
+              setPassword('demo1234')
+            }}
+          >
+            Use staff account
+          </button>
+        </div>
+      </div>
+
       <p className="mt-6 text-center text-sm text-muted">
         {t('auth.noAccount')}{' '}
         <Link href="/register" className="font-medium text-brand hover:underline">

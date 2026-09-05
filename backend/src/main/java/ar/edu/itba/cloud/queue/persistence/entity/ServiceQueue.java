@@ -80,6 +80,13 @@ public class ServiceQueue {
     @Column(name = "require_party_size", nullable = false)
     private boolean requirePartySize = false;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "call_strategy", nullable = false, length = 24)
+    private CallStrategy callStrategy = CallStrategy.GLOBAL_AGE;
+
+    @Column(name = "round_robin_position", nullable = false)
+    private int roundRobinPosition;
+
     @Column(name = "next_ticket_number", nullable = false)
     private long nextTicketNumber = 1L;
 
@@ -91,6 +98,9 @@ public class ServiceQueue {
 
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    @Column(name = "archived_at")
+    private Instant archivedAt;
 
     protected ServiceQueue() {
         // for JPA
@@ -123,7 +133,7 @@ public class ServiceQueue {
     }
 
     public boolean acceptsNewEntries() {
-        return status == QueueStatus.OPEN;
+        return status == QueueStatus.OPEN && archivedAt == null;
     }
 
     public UUID getId() {
@@ -230,6 +240,11 @@ public class ServiceQueue {
         this.requirePartySize = requirePartySize;
     }
 
+    public CallStrategy getCallStrategy() { return callStrategy; }
+    public void setCallStrategy(CallStrategy value) { callStrategy = value; }
+    public int getRoundRobinPosition() { return roundRobinPosition; }
+    public void setRoundRobinPosition(int value) { roundRobinPosition = value; }
+
     public Instant getCreatedAt() {
         return createdAt;
     }
@@ -237,6 +252,8 @@ public class ServiceQueue {
     public Instant getUpdatedAt() {
         return updatedAt;
     }
+    public Instant getArchivedAt() { return archivedAt; }
+    public void setArchivedAt(Instant archivedAt) { this.archivedAt = archivedAt; }
 
     public void setUpdatedAt(Instant updatedAt) {
         this.updatedAt = updatedAt;

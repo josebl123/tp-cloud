@@ -6,7 +6,7 @@ import { cx } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { usePathSegment } from '@/lib/usePathSegment'
-import type { PublicQueueView } from '@/lib/types'
+import type { PublicQueueView, QueueAvailabilityView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Field } from '@/components/ui/Field'
@@ -28,6 +28,7 @@ export default function JoinQueuePage() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [partySize, setPartySize] = useState('2')
+  const [availability, setAvailability] = useState<QueueAvailabilityView | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -53,17 +54,43 @@ export default function JoinQueuePage() {
     return () => controller.abort()
   }, [queueId, t])
 
+  useEffect(() => {
+    const size = Number(partySize)
+    if (!queueId || !Number.isInteger(size) || size < 1) {
+      setAvailability(null)
+      return
+    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      api.publicApi.availability(queueId, size, controller.signal).then(setAvailability, (cause: unknown) => {
+        if (!controller.signal.aborted) setFormError(cause instanceof ApiError ? cause.message : 'Could not check availability.')
+      })
+    }, 300)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [partySize, queueId])
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     if (!queueId || !queue) return
 
     setFormError(null)
+    if (!partySize.trim() || Number(partySize) < 1) {
+      setFormError('Enter a group size of at least 1.')
+      return
+    }
+    if (!availability?.available) {
+      setFormError('This group size cannot join right now. Adjust it or check back shortly.')
+      return
+    }
     setSubmitting(true)
     try {
       const ticket = await api.publicApi.join(queueId, {
         name: name.trim(),
         email: email.trim(),
-        partySize: queue.requirePartySize ? Number(partySize) : undefined,
+        partySize: Number(partySize),
         // Remembered server-side, so the ticket email arrives in the language this page is in.
         locale,
       })
@@ -85,7 +112,7 @@ export default function JoinQueuePage() {
 
   if (!queue) return <CustomerShell><PageLoader label={t('join.checking')} /></CustomerShell>
 
-  const closed = !queue.acceptingEntries
+  const closed = !queue.acceptingEntries || (Number(partySize) >= 1 && availability?.available === false)
 
   return (
     <CustomerShell>
@@ -103,20 +130,21 @@ export default function JoinQueuePage() {
           </div>
           <div className="rounded-2xl border border-brand/20 bg-brand-soft p-5">
             <div className="font-display text-4xl font-semibold tnum text-brand">
-              {queue.estimatedWaitMinutes === undefined || queue.estimatedWaitMinutes === 0
-                ? '0'
-                : queue.estimatedWaitMinutes}
-              <span className="ml-1 text-lg font-medium">{t('join.minutesShort')}</span>
+              {queue.full ? t('join.full') : t('join.quoteOpen')}
             </div>
-            <div className="mt-1 text-sm text-brand/80">{t('join.estimatedWait')}</div>
+            <div className="mt-1 text-sm text-brand/80">{t('join.quoteHint')}</div>
           </div>
         </div>
 
         {closed ? (
           <div className="mt-7">
             <Alert kind="warn">
-              {queue.full
-                ? t('join.full')
+              {availability && !availability.eligible
+                ? t('join.noLane')
+                : availability?.laneFull
+                  ? t('join.laneFull')
+                  : queue.full || availability?.queueFull
+                    ? t('join.full')
                 : queue.status === 'PAUSED'
                   ? t('join.paused')
                   : t('join.closed')}
@@ -124,6 +152,39 @@ export default function JoinQueuePage() {
           </div>
         ) : (
           <form onSubmit={submit} className="mt-8 space-y-5">
+            <Field
+              label={t('join.groupSize')}
+              type="number"
+              min={1}
+              max={50}
+              inputMode="numeric"
+              value={partySize}
+              onChange={(event) => setPartySize(event.target.value)}
+              required
+            />
+            {queue.lanes?.length ? (
+              <p className="text-sm text-muted">
+                {t('join.laneAssigned', {
+                  lanes: queue.lanes
+                    .filter((lane) => lane.active)
+                    .map((lane) => `${lane.name} (${lane.minPartySize}–${lane.maxPartySize ?? '∞'})`)
+                    .join(', '),
+                })}
+              </p>
+            ) : null}
+            {availability ? (
+              <Alert kind={availability.available ? 'info' : 'warn'}>
+                {availability.available
+                  ? t('join.quote', {
+                      lane: availability.lane?.name ?? '',
+                      lanePosition: availability.lanePosition ?? 0,
+                      groupsAhead: availability.globalWaitingGroupsAhead ?? 0,
+                      inService: availability.groupsInService ?? 0,
+                      minutes: availability.estimatedWaitMinutes ?? 0,
+                    })
+                  : t('join.quoteUnavailable')}
+              </Alert>
+            ) : null}
             <Field
               label={t('join.yourName')}
               value={name}
@@ -146,19 +207,6 @@ export default function JoinQueuePage() {
               hint={t('join.contactHint')}
               required
             />
-
-            {queue.requirePartySize ? (
-              <Field
-                label={t('join.partySize')}
-                type="number"
-                min={1}
-                max={50}
-                inputMode="numeric"
-                value={partySize}
-                onChange={(event) => setPartySize(event.target.value)}
-                required
-              />
-            ) : null}
 
             {formError ? <Alert kind="error">{formError}</Alert> : null}
 

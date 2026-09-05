@@ -10,6 +10,8 @@ erDiagram
     ESTABLISHMENT ||--o{ MEMBERSHIP : "has staff"
     ESTABLISHMENT ||--o{ SERVICE_QUEUE : "runs"
     SERVICE_QUEUE ||--o{ QUEUE_ENTRY : "holds"
+    SERVICE_QUEUE ||--o{ QUEUE_LANE : "segments"
+    QUEUE_LANE ||--o{ QUEUE_ENTRY : "receives"
     SERVICE_QUEUE ||--o{ QUEUE_EVENT : "records"
     QUEUE_ENTRY ||--o{ NOTIFICATION_RECORD : "triggers"
     QUEUE_ENTRY ||--o{ QUEUE_EVENT : "appears in"
@@ -68,6 +70,16 @@ stateDiagram-v2
 `SERVED`, `LEFT` and `NO_SHOW` are terminal and stamp `finished_at`, which is what the metrics
 window filters on.
 
+## Carriles y archivado
+
+Una cola mantiene un único QR, pero puede tener carriles internos con rangos de `partySize`, prioridad,
+capacidad (`PERSONS` suma personas; `GROUPS` suma entradas), factor de tiempo y estado activo. El primer
+carril activo cuyo rango contiene el tamaño del grupo recibe la entrada; los rangos activos no pueden
+solaparse. Las colas históricas se migran al carril `1+`.
+
+`DELETE /queues/{id}` archiva lógicamente la cola: la marca como cerrada, conserva entradas, eventos y
+notificaciones, la oculta de listados y rechaza nuevas operaciones normales.
+
 ## Queue status
 
 | Status | New customers | Staff can call/serve |
@@ -109,7 +121,8 @@ Both take the same per-queue lock, so they cannot fight each other or the staff 
 averageServiceTime = mean of the last N completed services   (N = q.estimation.service-time-samples)
                      falling back to the queue's defaultServiceMinutes until there is any history
 
-wait = ceil((peopleAhead + peopleBeingAttended) / serviceStations) x averageServiceTime
+Wait is simulated from shared stations: called/serving groups reserve a station for their
+lane-adjusted average duration, then waiting groups are scheduled through the configured call strategy.
 ```
 
 `peopleBeingAttended` (entries in `CALLED` or `SERVING`) is counted because those customers occupy
@@ -124,7 +137,7 @@ configured guess rather than a measurement.
 | Type | Fires when |
 |---|---|
 | `TICKET_CREATED` | On join. **Carries the personal ticket link.** |
-| `APPROACHING_POSITION` | `peopleAhead <= notifyAtPosition` |
+| `APPROACHING_POSITION` | `groupsScheduledAhead <= notifyAtPosition` under the configured call strategy |
 | `APPROACHING_TIME` | `estimatedWaitMinutes <= notifyAtMinutes` |
 | `YOUR_TURN` | The customer is called. |
 | `NO_SHOW` | The grace period expired; explains what the policy did. |

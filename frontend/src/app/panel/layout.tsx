@@ -30,7 +30,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-dvh">
-      <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
+      <header className="no-print sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur-md">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-5">
           <Link href="/panel" className="shrink-0">
             <Logo />
@@ -63,7 +63,7 @@ export default function PanelLayout({ children }: { children: React.ReactNode })
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-5 py-8">{children}</main>
+      <main className="mx-auto max-w-6xl px-5 py-8 print:max-w-none print:px-0 print:py-0">{children}</main>
     </div>
   )
 }

@@ -28,21 +28,20 @@ class QueueLifecycleIntegrationTest extends AbstractIntegrationTest {
         assertThat(landing.get("establishmentName").asText()).isEqualTo("Parrilla La Espera");
         assertThat(landing.get("acceptingEntries").asBoolean()).isTrue();
         assertThat(landing.get("waitingCount").asInt()).isZero();
-        assertThat(landing.get("estimatedWaitMinutes").asInt()).isZero();
 
         JsonNode ana = join(queueId, "Ana Perez", "ana@lifecycle.q");
         JsonNode bruno = join(queueId, "Bruno Diaz", "bruno@lifecycle.q");
         JsonNode carla = join(queueId, "Carla Gomez", "carla@lifecycle.q");
 
-        assertThat(ana.get("position").asInt()).isEqualTo(1);
-        assertThat(bruno.get("position").asInt()).isEqualTo(2);
-        assertThat(carla.get("position").asInt()).isEqualTo(3);
+        assertThat(ana.get("lanePosition").asInt()).isEqualTo(1);
+        assertThat(bruno.get("lanePosition").asInt()).isEqualTo(2);
+        assertThat(carla.get("lanePosition").asInt()).isEqualTo(3);
         assertThat(ana.get("ticketNumber").asLong()).isEqualTo(1);
         assertThat(carla.get("ticketNumber").asLong()).isEqualTo(3);
 
         // Ticket numbers are stable, positions are derived: Bruno has one person ahead.
         JsonNode brunoTicket = readTicket(ticketToken(bruno));
-        assertThat(brunoTicket.get("peopleAhead").asInt()).isEqualTo(1);
+        assertThat(brunoTicket.get("globalWaitingGroupsAhead").asInt()).isEqualTo(1);
         assertThat(brunoTicket.get("estimatedWaitMinutes").asInt()).isEqualTo(10);
         assertThat(brunoTicket.get("ticketUrl").asText())
                 .isEqualTo("http://localhost:3000/t/" + ticketToken(bruno));
@@ -51,7 +50,6 @@ class QueueLifecycleIntegrationTest extends AbstractIntegrationTest {
         assertThat(initialBoard.get("waitingCount").asInt()).isEqualTo(3);
         assertThat(initialBoard.get("inServiceCount").asInt()).isZero();
         assertThat(initialBoard.get("usingDefaultServiceTime").asBoolean()).isTrue();
-        assertThat(initialBoard.get("estimatedWaitMinutesForNewEntry").asInt()).isEqualTo(30);
 
         // Staff calls the front of the line.
         JsonNode called = callNext(owner, queueId);
@@ -61,7 +59,7 @@ class QueueLifecycleIntegrationTest extends AbstractIntegrationTest {
 
         // Ana no longer occupies a place in the waiting line, so Bruno moves up...
         JsonNode brunoAfterCall = readTicket(ticketToken(bruno));
-        assertThat(brunoAfterCall.get("position").asInt()).isEqualTo(1);
+        assertThat(brunoAfterCall.get("lanePosition").asInt()).isEqualTo(1);
         // ...but Ana still occupies the service station, so his estimate is not zero.
         assertThat(brunoAfterCall.get("estimatedWaitMinutes").asInt()).isEqualTo(10);
 
@@ -173,7 +171,7 @@ class QueueLifecycleIntegrationTest extends AbstractIntegrationTest {
         JsonNode back = setEntryStatus(owner, anaEntryId, EntryStatus.WAITING);
 
         assertThat(back.get("status").asText()).isEqualTo("WAITING");
-        assertThat(back.get("position").asInt()).isEqualTo(1);
-        assertThat(readTicket(ticketToken(ana)).get("position").asInt()).isEqualTo(1);
+        assertThat(back.get("lanePosition").asInt()).isEqualTo(1);
+        assertThat(readTicket(ticketToken(ana)).get("lanePosition").asInt()).isEqualTo(1);
     }
 }

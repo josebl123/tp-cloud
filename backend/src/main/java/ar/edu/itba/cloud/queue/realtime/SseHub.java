@@ -102,7 +102,7 @@ public class SseHub {
             emitter.send(SseEmitter.event().name(eventName).data(payload));
         } catch (IOException | IllegalStateException ex) {
             log.debug("Could not deliver initial SSE payload: {}", ex.getMessage());
-            emitter.completeWithError(ex);
+            emitter.complete();
         }
     }
 
@@ -150,7 +150,9 @@ public class SseHub {
             try {
                 emitter.send(SseEmitter.event().comment("ping"));
             } catch (IOException | IllegalStateException ex) {
-                emitter.completeWithError(ex);
+                // A browser navigating away commonly closes the SSE socket between heartbeats.
+                // Complete normally so it is removed without reaching the global exception handler.
+                emitter.complete();
             }
         }
     }
@@ -164,7 +166,7 @@ public class SseHub {
                 emitter.send(SseEmitter.event().name(eventName).data(payload));
             } catch (IOException | IllegalStateException ex) {
                 log.debug("Dropping SSE subscriber: {}", ex.getMessage());
-                emitter.completeWithError(ex);
+                emitter.complete();
             }
         }
     }

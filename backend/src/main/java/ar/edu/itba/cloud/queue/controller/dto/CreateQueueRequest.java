@@ -1,6 +1,7 @@
 package ar.edu.itba.cloud.queue.controller.dto;
 
 import ar.edu.itba.cloud.queue.persistence.entity.NoShowPolicy;
+import ar.edu.itba.cloud.queue.persistence.entity.CallStrategy;
 import ar.edu.itba.cloud.queue.service.command.CreateQueueCommand;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -19,11 +20,11 @@ public record CreateQueueRequest(
         @Min(1) Integer moveBackPositions,
         @Min(1) Integer notifyAtPosition,
         @Min(1) Integer notifyAtMinutes,
-        Boolean requirePartySize) {
+        CallStrategy callStrategy) {
 
     public CreateQueueCommand toCommand() {
         return new CreateQueueCommand(name, description, serviceStations, defaultServiceMinutes, maxSize,
                 gracePeriodSeconds, noShowPolicy, moveBackPositions, notifyAtPosition, notifyAtMinutes,
-                requirePartySize);
+                callStrategy);
     }
 }
