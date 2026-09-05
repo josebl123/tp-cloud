@@ -119,6 +119,28 @@ whole API against a real PostgreSQL through Testcontainers (Docker must be runni
 a controllable clock, so grace periods and token expiry are asserted directly rather than by
 sleeping.
 
+## Running it in a container
+
+```bash
+cd backend && docker build -t queue-api:1 .
+```
+
+A multi-stage build: the JDK, Maven and the sources stay in the build stage, and the runtime image is a
+JRE with the jar extracted into layers, running as a non-root user. Tests are skipped inside the build
+because Testcontainers needs a Docker daemon the build does not have - run `mvn test` outside it.
+
+```bash
+docker run --rm -p 8080:8080 --network tp-cloud_default \
+  -e DB_URL=jdbc:postgresql://postgres:5432/qdb -e DB_USER=q -e DB_PASSWORD=q \
+  -e JWT_SECRET=... queue-api:1
+```
+
+`.dockerignore` keeps `.env` out of the image: configuration is passed in at run time, so the same
+image is what runs locally and on an instance.
+
+On EC2 the container is started by systemd - `backend/queue-container.service`, which also documents
+moving the image with `docker save` / `docker load` instead of publishing it to a registry.
+
 ## Configuration
 
 Everything is overridable by environment variable; defaults suit local development.

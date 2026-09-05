@@ -1,0 +1,37 @@
+# Runs the API container on an EC2 instance. Copy to /etc/systemd/system/ and enable it.
+#
+# The Auto Scaling Group launches instances with nobody watching, so the unit has to bring the
+# application up on boot by itself:  sudo systemctl enable --now queue-container
+#
+# The image is loaded onto the instance from a tarball, not pulled from a registry:
+#     docker save queue-api:1 | gzip > queue-api.tgz     # on your machine
+#     scp queue-api.tgz ec2-user@<host>:/tmp/            # then, on the instance:
+#     gunzip -c /tmp/queue-api.tgz | sudo docker load
+# so no registry account and no image published anywhere.
+
+[Unit]
+Description=Queue API (container)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+
+# --rm and a stop before start: a leftover container from a previous boot would
+# otherwise take the name and keep this one from ever starting.
+ExecStartPre=-/usr/bin/docker stop queue-api
+ExecStartPre=-/usr/bin/docker rm queue-api
+ExecStart=/usr/bin/docker run --rm --name queue-api \
+    --env-file /etc/queue/queue.env \
+    --publish 8080:8080 \
+    --log-driver journald \
+    queue-api:1
+
+ExecStop=/usr/bin/docker stop queue-api
+
+[Install]
+WantedBy=multi-user.target
