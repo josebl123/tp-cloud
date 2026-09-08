@@ -13,6 +13,7 @@ export const en = {
   'common.cancel': 'Cancel',
   'common.settings': 'Settings',
   'common.qr': 'QR',
+  'common.moreActions': 'More actions',
   'common.loading': 'Loading',
   'common.somethingWrong': 'Something went wrong.',
   'common.optional': 'Optional',

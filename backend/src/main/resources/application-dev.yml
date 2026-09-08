@@ -1,4 +1,6 @@
 q:
+  # Next chooses 3001 when 3000 is already occupied; permit either local dev origin.
+  cors-allowed-origins: ${CORS_ORIGINS:http://localhost:3000,http://localhost:3001}
   realtime:
     mode: POSTGRES
   notifications:

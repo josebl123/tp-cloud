@@ -11,6 +11,7 @@ export const es: Record<MessageKey, string> = {
   'common.cancel': 'Cancelar',
   'common.settings': 'Ajustes',
   'common.qr': 'QR',
+  'common.moreActions': 'Más acciones',
   'common.loading': 'Cargando',
   'common.somethingWrong': 'Algo salió mal.',
   'common.optional': 'Opcional',

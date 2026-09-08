@@ -109,6 +109,9 @@ export default function QueueBoardPage() {
 
   const { queue } = board
   const closed = queue.status === 'CLOSED'
+  const activeLanes = board.lanes?.filter((lane) => lane.lane.active) ?? []
+  const laneGridColumns =
+    activeLanes.length === 1 ? 'xl:grid-cols-1' : activeLanes.length === 2 ? 'xl:grid-cols-2' : 'xl:grid-cols-3'
 
   return (
     <div className="space-y-6">
@@ -126,7 +129,7 @@ export default function QueueBoardPage() {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 xl:hidden">
           {queue.status === 'OPEN' ? (
             <Button variant="secondary" size="sm" onClick={() => setQueueStatus('PAUSED')}>
               {t('board.pause')}
@@ -160,7 +163,20 @@ export default function QueueBoardPage() {
       {closed ? <Alert kind="info">{t('board.closedNotice')}</Alert> : null}
       {actionError ? <Alert kind="error">{actionError}</Alert> : null}
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="xl:grid xl:grid-cols-[18rem_minmax(0,1fr)] xl:items-start xl:gap-8">
+        <aside className="hidden xl:block">
+          <BoardControlPanel
+            board={board}
+            closed={closed}
+            calling={calling}
+            onCall={callNext}
+            onStatus={setQueueStatus}
+            onClose={() => setConfirmClose(true)}
+          />
+        </aside>
+
+        <div className="space-y-6">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:hidden">
         <Stat label={t('board.statWaiting')} value={board.waitingCount} emphasis />
         <Stat label={t('board.statBeingServed')} value={board.inServiceCount} />
         <Stat
@@ -171,13 +187,13 @@ export default function QueueBoardPage() {
         <Stat label={t('board.activeLanes')} value={board.lanes?.filter((lane) => lane.lane.active).length ?? 0} />
       </div>
 
-      <Button size="lg" block onClick={callNext} loading={calling} disabled={closed || board.waitingCount === 0}>
+      <Button className="xl:hidden" size="lg" block onClick={callNext} loading={calling} disabled={closed || board.waitingCount === 0}>
         {board.waitingCount === 0 ? t('board.nobodyWaiting') : t('board.callNext')}
       </Button>
 
       {board.lanes?.length > 1 ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          {board.lanes.filter((lane) => lane.lane.active).map((lane) => (
+        <div className={cx('grid gap-4 md:grid-cols-2', laneGridColumns)}>
+          {activeLanes.map((lane) => (
             <Card key={lane.lane.id}>
               <div className="flex items-start justify-between gap-3">
                 <div><h2 className="font-display text-lg font-semibold">{lane.lane.name}</h2><p className="text-sm text-muted">
@@ -202,7 +218,7 @@ export default function QueueBoardPage() {
         </div>
       ) : null}
 
-      {board.lanes?.length <= 1 ? <div className="grid gap-6 lg:grid-cols-2">
+      {board.lanes?.length <= 1 ? <div className="grid gap-6 lg:grid-cols-2 xl:grid-cols-[minmax(17rem,0.8fr)_minmax(0,1.2fr)]">
         <section>
           <h2 className="mb-3 font-display text-lg font-semibold tracking-tight">
             {t('board.nowServing')}{' '}
@@ -276,6 +292,8 @@ export default function QueueBoardPage() {
           </ul>
         ) : null}
       </section>
+        </div>
+      </div>
 
       <ConfirmDialog
         open={confirmClose}
@@ -296,6 +314,55 @@ export default function QueueBoardPage() {
         onCancel={() => setConfirmClose(false)}
       />
     </div>
+  )
+}
+
+function BoardControlPanel({
+  board,
+  closed,
+  calling,
+  onCall,
+  onStatus,
+  onClose,
+}: {
+  board: QueueSnapshot
+  closed: boolean
+  calling: boolean
+  onCall: () => void
+  onStatus: (status: QueueStatus) => void
+  onClose: () => void
+}) {
+  const { t } = useI18n()
+  const { queue } = board
+
+  return (
+    <Card className="sticky top-24 space-y-5">
+      <div className="grid grid-cols-2 gap-2">
+        <Stat label={t('board.statWaiting')} value={board.waitingCount} emphasis />
+        <Stat label={t('board.statBeingServed')} value={board.inServiceCount} />
+        <Stat
+          label={t('board.statAverageService')}
+          value={`${board.averageServiceMinutes} min`}
+          hint={board.usingDefaultServiceTime ? t('board.configuredEstimate') : t('board.measured')}
+        />
+        <Stat label={t('board.activeLanes')} value={board.lanes?.filter((lane) => lane.lane.active).length ?? 0} />
+      </div>
+      <Button size="lg" block onClick={onCall} loading={calling} disabled={closed || board.waitingCount === 0}>
+        {board.waitingCount === 0 ? t('board.nobodyWaiting') : t('board.callNext')}
+      </Button>
+      <div className="space-y-2 border-t border-line pt-4">
+        {queue.status === 'OPEN' ? (
+          <Button variant="secondary" size="sm" block onClick={() => onStatus('PAUSED')}>{t('board.pause')}</Button>
+        ) : (
+          <Button variant="secondary" size="sm" block onClick={() => onStatus('OPEN')}>
+            {closed ? t('board.reopen') : t('board.resume')}
+          </Button>
+        )}
+        {!closed ? <Button variant="ghost" size="sm" block onClick={onClose}>{t('board.close')}</Button> : null}
+        <Link href={`/panel/queue/qr?id=${queue.id}`} className="block"><Button variant="secondary" size="sm" block>{t('common.qr')}</Button></Link>
+        <Link href={`/panel/queue/settings?id=${queue.id}`} className="block"><Button variant="secondary" size="sm" block>{t('common.settings')}</Button></Link>
+      </div>
+    </Card>
   )
 }
 

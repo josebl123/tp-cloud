@@ -9,6 +9,7 @@ import { useI18n } from '@/lib/i18n'
 import { formatMinutes, formatPercent, formatWaitNeutral, queueStatusLabel, queueStatusTone, errorMessage } from '@/lib/format'
 import type { MetricsView, QueueSnapshot, QueueView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
+import { ActionMenu } from '@/components/ActionMenu'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card, CardHeader } from '@/components/ui/Card'
@@ -136,7 +137,7 @@ export default function PanelHomePage() {
             }
           />
         ) : (
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {queues.map((queue) => (
               <QueueCard key={queue.id} queue={queue} board={boards[queue.id]} />
             ))}
@@ -149,6 +150,7 @@ export default function PanelHomePage() {
 
 function QueueCard({ queue, board }: { queue: QueueView; board: QueueSnapshot | undefined }) {
   const { t } = useI18n()
+  const router = useRouter()
 
   return (
     <Card className="flex flex-col">
@@ -175,22 +177,19 @@ function QueueCard({ queue, board }: { queue: QueueView; board: QueueSnapshot | 
         </div>
       </div>
 
-      <div className="mt-6 flex flex-wrap gap-2">
+      <div className="mt-6 flex items-center gap-2">
         <Link href={`/panel/queue?id=${queue.id}`} className="flex-1">
           <Button block size="sm">
             {t('panel.openBoard')}
           </Button>
         </Link>
-        <Link href={`/panel/queue/qr?id=${queue.id}`}>
-          <Button variant="secondary" size="sm">
-            {t('common.qr')}
-          </Button>
-        </Link>
-        <Link href={`/panel/queue/settings?id=${queue.id}`}>
-          <Button variant="secondary" size="sm">
-            {t('common.settings')}
-          </Button>
-        </Link>
+        <ActionMenu
+          label={t('common.moreActions')}
+          items={[
+            { label: t('common.qr'), onSelect: () => router.push(`/panel/queue/qr?id=${queue.id}`) },
+            { label: t('common.settings'), onSelect: () => router.push(`/panel/queue/settings?id=${queue.id}`) },
+          ]}
+        />
       </div>
     </Card>
   )
