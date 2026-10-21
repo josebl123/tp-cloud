@@ -1,7 +1,0 @@
-# Never ship secrets into an image that gets copied around.
-.env
-.env.local
-
-target/
-*.iml
-.idea/

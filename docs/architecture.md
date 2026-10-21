@@ -1,103 +1,103 @@
 # Q — Architecture, Design and Decisions
 
-> ITBA 82.08 Cloud Computing · Trabajo Práctico · Grupo 9
-> Nicolás Koron · José María Benegas Lynch · Agustín Galán · Nicolás Bellavitis Alzate
+How the system is built, as deployed for the Tercera Entrega, and why. The design it was built from
+is [arquitectura-serverless.md](historial/arquitectura-serverless.md) (in Spanish); where the build deviates
+from it, the "Ajustes al diseño" table in [ROADMAP.md](historial/ROADMAP.md#ajustes-al-diseño) says so and
+why. The previous architecture — Spring Boot on EC2 behind a load balancer, with PostgreSQL on RDS —
+is in [`tp2/`](../tp2/) and in this file's git history.
 
-This document explains how Q is built and, more importantly, **why it is built that way**. Where a
-decision had a credible alternative, the alternative is named and the trade-off is stated.
-
-Companion documents:
-
-| Document | Covers |
+| | |
 |---|---|
-| [domain-model.md](domain-model.md) | Entities, the entry state machine, business rules |
-| [api-reference.md](api-reference.md) | Every endpoint, error code and payload |
-| [frontend.md](frontend.md) | Frontend implementation notes and design language |
-| [../README.md](../README.md) | Getting it running |
+| Domain rules | [domain-model.md](domain-model.md) |
+| Endpoints and the WebSocket contract | [api-reference.md](api-reference.md) |
+| Running the pipeline | [deployment.md](deployment.md) |
+| Traps | [gotchas.md](gotchas.md) |
 
 ---
 
 ## 1. Purpose and scope
 
-Q digitises waiting in places where people queue physically: restaurants, shops, service counters.
-A customer scans a QR code, joins the line with minimal data, and follows their turn from their own
-phone. Staff run the line from a panel.
+Q replaces a physical line with a virtual one. A customer scans a QR code, joins with a name and a
+contact, and follows their place from their phone; staff call, serve and manage the line from a
+panel. The scope is the MVP of *Funcionalidades 1-5* of the proposal: joining by QR, following the
+wait, notifications, managing the line, and leaving or not showing up.
 
-The proposal defines five key functionalities, and this implementation covers exactly those:
-
-| # | Functionality | Where it lives |
-|---|---|---|
-| 1 | **QR access and joining** | `PublicQueueController`, `QrCodeService`, `/q/{queueId}` |
-| 2 | **Wait tracking** | `TicketService`, `EstimationService`, SSE, `/t/{ticketToken}` |
-| 3 | **Turn notifications** | `NotificationService`, `NotificationDispatcher` |
-| 4 | **Queue management by the business** | `QueueService`, `QueueEntryService`, `MetricsService` |
-| 5 | **Leaving and the grace period** | `QueueEntryService.leave`, `GraceService`, `GraceSweepJob` |
-
-**Deliberately out of scope for the MVP:** SMS and WhatsApp delivery (they need paid provider
-accounts; the seam for them exists), customer accounts, multi-language UI, opening-hour schedules,
-priority or VIP ordering, and payments.
+The Tercera Entrega asks for the architecture to be implemented with Terraform and deployed from a
+GitHub Actions pipeline, into an AWS Academy Learner Lab account that the cátedra must be able to
+reproduce from the README. Those two constraints — Terraform from a pipeline, and the lab's limits —
+shape the deployment as much as the application does.
 
 ---
 
 ## 2. System overview
 
+![Architecture of Queue on AWS](diagrams/arquitectura.png)
+
+The diagram above is the deliverable: AWS Cloud, the region and every resource the Terraform
+configuration creates, generated from [`diagrams/arquitectura.py`](diagrams/arquitectura.py). The
+flow chart below is the same system reduced to its data flow.
+
 ```mermaid
-graph TD
-    subgraph Client
-        C["Customer phone<br/>/q/:queueId · /t/:token"]
-        S["Staff panel<br/>/panel/*"]
-    end
+flowchart LR
+    browser([Browser]) -->|HTTPS| rest[API Gateway REST]
+    browser <-->|WSS| ws[API Gateway WebSocket]
+    browser -->|sign up / sign in| cognito[Cognito]
 
-    subgraph Static["Static hosting (no server)"]
-        CDN["CDN + object storage<br/>Next.js static export"]
-    end
+    rest -->|/ and /{proxy+}| spa[(S3: site)]
+    rest -->|/api/v1/public| public[λ public]
+    rest -->|/api/v1/... Cognito authorizer| staff[λ staff]
+    ws -->|$connect / $disconnect| wsconn[λ ws-connections]
 
-    subgraph API["Spring Boot API"]
-        CTRL[controller]
-        SVC[service]
-        PERS[persistence]
-        SSE["SseHub<br/>(in-memory emitters)"]
-        JOB["GraceSweepJob<br/>@Scheduled"]
-    end
+    public --> main[(DynamoDB q-main)]
+    staff --> main
+    wsconn --> conns[(DynamoDB q-connections)]
 
-    DB[("PostgreSQL 16")]
-    MAIL["SMTP / notification transport"]
+    main -->|Streams, only new events| publisher[λ stream-publisher]
+    publisher --> topic[[SNS FIFO q-queue-events]]
+    publisher -->|delayed| lifecycleq[[SQS q-lifecycle]]
+    topic --> pushq[[SQS FIFO q-push]]
+    topic -->|filtered| notifq[[SQS q-notifications]]
 
-    C --> CDN
-    S --> CDN
-    C -- "REST + SSE" --> CTRL
-    S -- "REST + SSE" --> CTRL
-    CTRL --> SVC
-    SVC --> PERS
-    PERS --> DB
-    SVC --> SSE
-    SSE -. "text/event-stream" .-> C
-    SSE -. "text/event-stream" .-> S
-    JOB --> SVC
-    SVC --> MAIL
+    pushq --> broadcaster[λ broadcaster]
+    notifq --> notifier[λ notifier]
+    lifecycleq --> lifecycle[λ lifecycle]
+
+    broadcaster -->|post to connection| ws
+    notifier -->|SMTP over TLS| gmail[Gmail]
+    notifier -.->|reads the app password| secrets[(Secrets Manager)]
+    lifecycle --> main
 ```
 
-Two audiences share one API:
+Two paths, and the line between them is the DynamoDB transaction:
 
-* **Customers** are anonymous. They are authorised by an unguessable ticket token in the URL path,
-  under `/api/v1/public/**`. They never hold an account or a password.
-* **Staff** authenticate with a bearer JWT and are authorised per establishment by membership.
+* **Synchronous.** A request reaches `λ public` or `λ staff`, which reads the queue, applies the
+  domain rules in memory, and writes everything that changed — including the events describing the
+  change — in one transaction conditioned on the queue's version. The response goes back at once.
+* **Asynchronous.** Everything else starts from those event items: the live push, the emails, the
+  grace timer, and releasing a closed queue. Consumers have independent queues and retries, so a
+  downstream failure does not roll back the committed change. Delivery limits are described in §6.
 
-### Technology choices at a glance
+### Components at a glance
 
-| Layer | Choice | Version | Why |
-|---|---|---|---|
-| Language | Java | 25 (LTS) | Current LTS; records, pattern matching and virtual threads are all used |
-| Framework | Spring Boot | 3.5.16 | Mature line with full Java 25 support; Boot 4 was newer than the risk budget for an MVP |
-| Persistence | Spring Data JPA + Hibernate | Boot-managed | Repository layer with explicit service boundaries |
-| Database | PostgreSQL | 16 | Row-level locking (`SELECT … FOR UPDATE`) is load-bearing here |
-| Migrations | Flyway | Boot-managed | Versioned schema; JPA runs in `validate` mode so drift fails at boot |
-| Security | Spring Security + Nimbus JOSE | Boot-managed | HS256 JWT without adding a JWT library |
-| Docs | springdoc-openapi | 2.9.0 | Swagger UI generated from the controllers |
-| QR | ZXing | 3.5.4 | Server-rendered PNG, so any browser can print the sheet |
-| Frontend | Next.js (App Router, static export) | 16.3.3 | Ships as static files: no server, no idle compute |
-| UI | React 19 · TypeScript 5.9 · Tailwind 4 | — | No component library; the design system is first-party |
-| Tests | JUnit 5 · Mockito · Testcontainers | Boot-managed | Integration tests run against a real PostgreSQL |
+| Component | Role | Why this and not something else |
+|---|---|---|
+| API Gateway REST | Serves the static site from S3 and the API on the same origin | CloudFront is blocked in the lab; this is the only HTTPS entry that can serve a private bucket. Same origin also means no CORS |
+| API Gateway WebSocket | Holds the browsers' connections; Lambda only runs on connect, disconnect, and to push | Push without polling, and without a server holding sockets |
+| 9 Lambdas, TypeScript on Node 22 | The API, the consumers, the seed, the Cognito trigger | Short cold starts without SnapStart; one language with the frontend; small single-file bundles |
+| DynamoDB `q-main` | Every item but the users, in one table | Every operation is per queue; one partition per queue gives transactions over a queue's items and ordered reads by prefix |
+| DynamoDB Streams | The source of every asynchronous action | Fires for committed writes; ordering is guaranteed per item |
+| SNS FIFO + SQS | Fan-out, filtering and buffering per consumer | Each consumer gets its own queue, retries, DLQ and concurrency limit |
+| Cognito | Staff accounts | Removes the hand-rolled login, password hashing and the JWT secret; API Gateway validates tokens without running a Lambda |
+| Gmail SMTP | Notification emails | The lab denies SES to every role. Gmail's SMTP server delivers to any address, with the group's account and an app password |
+| Secrets Manager | That app password, the only secret | Encrypted at rest and read with the lab's role; the pipeline writes the value, so it is in no file, plan or state |
+| S3 | The site, the function bundles, and the access logs of both | Three private buckets, as the TP2's correction asked |
+| CloudWatch | Logs of every function, alarms on every DLQ, on the push queue's age and on the stream's failures | Built in; the alarms publish to an SNS topic |
+
+**There is no VPC.** Nothing in the design needs one: DynamoDB, SNS, SQS, Secrets Manager and Cognito are
+reached over AWS's public endpoints with IAM, and there is no database instance or server to
+isolate. A VPC would require designing outbound access to these endpoints and Gmail, for example through
+service endpoints and internet egress. This delivery has no component requiring private subnets;
+a production account may still choose a VPC for network policy and egress controls.
 
 ---
 
@@ -105,888 +105,353 @@ Two audiences share one API:
 
 ### 3.1 A customer joins
 
-```mermaid
-sequenceDiagram
-    participant C as Customer
-    participant API as QueueEntryService
-    participant DB as PostgreSQL
-    participant N as NotificationDispatcher
-    participant SSE as SseHub
+1. The QR opens `/q/?id=<queueId>`. The page loads `GET /public/queues/{id}` and, as the party size
+   changes, `GET …/availability?partySize=`.
+2. `POST /public/queues/{id}/entries` reaches `λ public`. It first counts the request against the
+   caller's IP for the current minute (a conditional counter item in `q-main`); past the limit, 429.
+3. It reads the queue (`META`, lanes, active entries), runs `join`: validate the contact, choose the
+   lane, check the lane's capacity and the queue's, take an order key at the end, mint the ticket.
+4. One transaction writes the entry, its ticket and reference items, the queue's new version and the
+   `ENTRY_JOINED` event. 201 with the ticket.
+5. Asynchronously: the event reaches `q-push`, and `λ broadcaster` pushes the new board to staff
+   watching the queue and the new ticket view to every waiting customer connected to it; it also
+   reaches `q-notifications`, and `λ notifier` emails `TICKET_CREATED` with the ticket link.
 
-    C->>API: POST /public/queues/{id}/entries
-    API->>DB: SELECT … FOR UPDATE (queue row)
-    Note over API,DB: The lock is held for the whole transaction
-    API->>API: expire overdue grace periods
-    API->>API: validate status, capacity, contact channel
-    API->>DB: INSERT queue_entry (ticket number + order key from the locked row)
-    API->>DB: INSERT queue_event ENTRY_JOINED
-    API->>DB: INSERT notification_record TICKET_CREATED (PENDING)
-    API->>API: evaluate proximity thresholds for everyone waiting
-    API-->>C: 201 TicketView
-    Note over API: transaction commits, lock released
-    API->>N: NotificationQueuedEvent (after commit)
-    N->>C: ticket link by email / SMS / log
-    API->>SSE: QueueChangedEvent (after commit)
-    SSE-->>C: ticket.updated to every watching customer
-    SSE-->>SSE: queue.updated to every staff board
-```
+### 3.2 Staff call the next customer
 
-The ordering is the point. Nothing is sent to a human until the database has committed, and the
-lock is released before any I/O to a mail server happens.
-
-### 3.2 Staff calls the next customer
-
-```mermaid
-sequenceDiagram
-    participant S as Staff
-    participant API as QueueEntryService
-    participant DB as PostgreSQL
-    participant SSE as SseHub
-
-    S->>API: POST /queues/{id}/calls
-    API->>DB: SELECT … FOR UPDATE (queue row)
-    API->>API: expire overdue grace periods
-    API->>API: AccessGuard — is this user a member?
-    API->>DB: SELECT waiting entries ORDER BY order_key
-    alt line is empty
-        API-->>S: 409 QUEUE_EMPTY
-    else
-        API->>DB: UPDATE entry → CALLED, called_at, grace_expires_at
-        API->>DB: INSERT queue_event ENTRY_CALLED
-        API->>DB: INSERT notification_record YOUR_TURN
-        API-->>S: 200 EntryView
-        SSE-->>S: queue.updated (all staff boards)
-        SSE-->>API: ticket.updated (every watching customer's position shifts)
-    end
-```
-
-Two staff members pressing the button simultaneously do not call the same person: the second
-transaction blocks on the queue row, and by the time it proceeds the first customer is no longer
-`WAITING`.
+1. `POST /queues/{id}/calls` arrives with the Cognito token. API Gateway's authorizer validates it;
+   `λ staff` reads the caller's membership of the queue's establishment.
+2. `callNext` expires any due grace first, then the selector picks who is next under the queue's
+   call strategy and lanes. The entry becomes `CALLED` with `graceExpiresAt`.
+3. One transaction, conditioned on the version. If another call won the race, it re-reads and picks
+   again — so two staff pressing "call" at once call two different people.
+4. Asynchronously: `λ stream-publisher` sees `ENTRY_CALLED` and, besides publishing it, sends a
+   message to `q-lifecycle` delayed until the grace period ends. The board and every ticket are pushed;
+   the notifier sends `YOUR_TURN`, and any threshold alerts that the movement triggered.
 
 ### 3.3 A grace period expires
 
-Expiry is evaluated in **two independent places**, and this redundancy is deliberate.
+1. The delayed message reaches `λ lifecycle`. SQS delays at most 15 minutes, so a longer grace is
+   re-scheduled until it is due.
+2. `lifecycle` runs `expireDue` on the current state: if the person was served a second earlier, or
+   a read already expired them, there is nothing to do. Otherwise the queue's no-show policy applies
+   and the transaction records it.
+3. The events flow as before: pushes, and a `NO_SHOW` email explaining what the policy did.
 
-```mermaid
-graph LR
-    A["Any read of a queue or ticket"] --> C{"grace_expires_at &lt;= now?"}
-    B["GraceSweepJob every 10s"] --> C
-    C -- no --> D["Return current state"]
-    C -- yes --> E["Apply the queue's no-show policy"]
-    E --> F["Record ENTRY_NO_SHOW + notify"]
-    F --> G["Publish QueueChangedEvent"]
-```
+### 3.4 Staff close a queue
 
-* **Lazily, on read** — so a client is never shown a call the clock has already invalidated. Without
-  this, a customer refreshing at second 121 of a 120-second grace period would still see "it's your
-  turn".
-* **By a background sweep** — so a queue nobody is looking at still moves. Without this, a called
-  customer who never shows up would block the line indefinitely.
-
-Both take the same per-queue lock, so they cannot race each other or the staff panel.
+Closing is immediate and atomic: the status changes and `QUEUE_CLOSED` is recorded with the number of
+people still inside. `stream-publisher` sends it to `q-lifecycle` with no delay, and `λ lifecycle`
+releases everyone as `LEFT`, 24 per transaction, batch after batch until the line is empty. Each
+release reaches the notifier, which tells each customer the queue closed.
 
 ---
 
-## 4. Backend architecture
+## 4. The functions
 
-### 4.1 The layering rule
-
-The brief called for a hierarchical `persistence → service → controller` structure. That is enforced
-as a rule about **what types may cross each boundary**, not merely as a folder layout:
-
-```
-controller/   HTTP only. Receives request DTOs, returns read models.
-              Never imports a JPA entity.
-   ↓ commands (service.command.*)          ↑ read models (service.model.*)
-service/      Every business rule. The only layer that touches entities.
-              Never imports an HTTP type.
-   ↓ entities                              ↑ entities / projections
-persistence/  Entities and Spring Data repositories. No logic beyond queries.
-```
-
-Two consequences worth stating:
-
-* **Entities never escape the service layer**, so a lazy-loading proxy can never be serialised into
-  a response, and a JSON shape can never accidentally become a database contract.
-* **Services are directly testable** without a web layer, because they take plain command records
-  and return plain read models.
-
-### 4.2 Package map
-
-```
-ar.edu.itba.cloud.queue
-├── config/          AppProperties, SecurityConfig, WebConfig, OpenApiConfig, ClockConfig
-├── controller/      7 controllers + request DTOs
-├── service/
-│   ├── command/     inputs to the service layer
-│   ├── model/       read models returned by the service layer
-│   ├── notification/NotificationSender seam + dispatcher
-│   ├── event/       QueueChangedEvent, NotificationQueuedEvent
-│   └── *.java       AuthService, QueueService, QueueEntryService, GraceService,
-│                    EstimationService, MetricsService, NotificationService,
-│                    QueueOrdering, QueueViewFactory, AccessGuard, EventRecorder,
-│                    QrCodeService, GraceSweepJob, DevDataSeeder
-├── persistence/
-│   ├── entity/      7 entities + 9 enums
-│   └── repository/  7 repositories + EntryTimings projection
-├── realtime/        SseHub, RealtimeBroadcaster, SseHeartbeatJob
-├── security/        JwtService, AuthenticatedUser, @CurrentUser, problem handlers
-└── exception/       ApiException hierarchy + GlobalExceptionHandler
-```
-
-### 4.3 Why responses are read models, not DTOs mapped twice
-
-A common layout adds a `controller/dto` response record mirroring every service read model. Here
-requests have DTOs (they need bean-validation annotations and HTTP-specific coercion) but
-**responses reuse the service read models directly**.
-
-The boundary that matters — entities never reaching the controller — is already enforced. Adding a
-second identical record per response would be a mapping step that changes nothing and can drift.
-This is a considered simplification, not an oversight.
-
----
-
-## 5. Data model
-
-Full ER diagram and column-level notes live in [domain-model.md](domain-model.md). The decisions
-worth defending here:
-
-### 5.1 `service_queue` holds its own counters
-
-`next_ticket_number` and `next_order_key` live on the queue row rather than being derived with
-`MAX(...)`. Because every mutation already holds a write lock on that row, incrementing a column is
-both correct and cheaper than scanning the entries table.
-
-### 5.2 `queue_event` is append-only and carries raw ids
-
-Events are written on every state change and never navigated from, so they hold `queue_id` and
-`entry_id` as plain UUID columns rather than JPA associations. This makes the audit trail cheap to
-write, which is what allows *every* transition to record one — the proposal's "los eventos quedarán
-registrados" is true by construction rather than by remembering to log in each branch.
-
-### 5.3 Notification uniqueness includes a cycle counter
-
-The natural key `(entry_id, type)` would be wrong. A customer who is called, misses their turn, is
-moved back into the line and is called again **must** receive a second "it's your turn".
-
-So `queue_entry.notification_cycle` increments whenever an entry returns to `WAITING` after being
-called, and the unique key is `(entry_id, type, cycle)`. De-duplication is therefore **structural**:
-a threshold alert fires exactly once per pass through the line, however many times the queue moves,
-with no timers or "last sent at" bookkeeping.
-
-### 5.4 Contact is enforced in the database
-
-`CHECK (customer_email IS NOT NULL OR customer_phone IS NOT NULL)`. The ticket link is the only way
-a customer gets back to their place, so an entry with no contact channel is a broken row, not merely
-a form-validation miss. It is rejected at the DTO, again in the service, and finally by the schema.
-
----
-
-## 6. The three algorithms that matter
-
-### 6.1 Ordering — sparse keys, derived positions
-
-**Positions are never stored.** A position is the index of an entry in the `WAITING` list sorted by
-`order_key`. A stored position could disagree with reality; a derived one cannot.
-
-Keys are handed out `ORDER_KEY_GAP = 1000` apart:
-
-```
-join            → key = next_order_key, then next_order_key += 1000
-move to end     → same
-move back N     → midpoint between the Nth and (N+1)th waiting entries
-keep position   → unchanged
-```
-
-Worked example — Ana is called, misses her grace period, and the queue's policy is `MOVE_BACK`
-with `moveBackPositions = 2`. The insertion point is computed against the line *excluding* her:
-
-```
-waiting, Ana removed     Bruno 2000     Carla 3000     Dario 4000
-                                        └──────┬──────┘
-                                  midpoint(3000, 4000) = 3500
-
-result                   Bruno 2000     Carla 3000     Ana 3500     Dario 4000
-                         └──── 2 people now ahead of Ana ────┘
-```
-
-Nobody else's key was touched: one row was written, not four.
-
-If two neighbours are ever adjacent (no integer between them), `QueueOrdering.renormalize` rewrites
-the whole waiting list back to even 1000-spacing and the insertion is retried. That path is rare by
-construction but is unit-tested directly.
-
-**Alternative rejected:** storing a dense `position` integer and renumbering every row behind a
-move. Simpler to read, but it turns a single-customer change into an O(n) write and makes two
-concurrent moves interfere in ways the queue lock alone would not resolve cleanly.
-
-### 6.2 Estimation — explainable on purpose
-
-```
-averageServiceTime = mean of the last N completed services      (N = 10 by default)
-                     falling back to the queue's defaultServiceMinutes until history exists
-
-wait = ceil((peopleAhead + peopleBeingAttended) / serviceStations) × averageServiceTime
-```
-
-Three details carry weight:
-
-* **`peopleBeingAttended` is counted.** Entries in `CALLED` or `SERVING` occupy the service stations
-  before anyone waiting gets a turn. There is no double counting: they are no longer in the
-  `WAITING` list. Without this, the person at the front of a busy queue would be told "0 minutes"
-  while every station was occupied.
-* **`serviceStations`** models a restaurant with three tables turning over in parallel, or a single
-  counter. Dividing and rounding up is the difference between a plausible estimate and a useless one.
-* **`usingDefaultServiceTime` is exposed in the API**, so the UI can be honest about an estimate
-  that is a configured guess rather than a measurement.
-
-A moving average over the last N was chosen over an all-time mean because a queue's tempo changes
-across a service; over an exponentially-weighted average because the moving mean is trivially
-explainable to a business owner looking at the number.
-
-### 6.3 No-show policies
-
-The proposal says the establishment decides what happens to someone who does not show up. Four
-policies are supported, configured per queue:
-
-| Policy | Result | Suits |
+| Function | Trigger | Does |
 |---|---|---|
-| `KEEP_POSITION` | Back to `WAITING`, same place | Forgiving venues, long waits |
-| `MOVE_BACK` | Back `moveBackPositions` places | The default compromise |
-| `MOVE_TO_END` | Back of the line | Busy venues |
-| `REMOVE` | `NO_SHOW`, place lost | High-demand, no-tolerance |
+| `public` | API Gateway REST | The customer's routes and the health check: queue view, availability, QR, join, ticket, leave, notifications |
+| `staff` | API Gateway REST, behind the Cognito authorizer | The whole panel: establishments, members, queues, lanes, board, calls, entries, metrics, WebSocket tickets |
+| `ws-connections` | API Gateway WebSocket `$connect`, `$disconnect` | Validates the customer's ticket or the staff member's one-time ticket, and records the connection |
+| `stream-publisher` | DynamoDB Streams on `q-main`, filtered to new event items | Publishes each event to SNS; schedules grace expiry and queue release on `q-lifecycle` |
+| `broadcaster` | SQS FIFO `q-push` | Pushes the current board and tickets to the connections watching a queue |
+| `notifier` | SQS `q-notifications` | Decides which notifications are due and sends them, once each: through Gmail's SMTP server in the Learner Lab, which denies SES |
+| `lifecycle` | SQS `q-lifecycle` | Applies due grace periods and releases closed queues in batches |
+| `seed` | Invoked by Terraform on apply | Loads the demo establishment, queues and lanes, idempotently |
+| `cognito-pre-signup` | Cognito pre sign-up | Confirms new accounts on the spot, so sign-up has no code step |
 
-`gracePeriodSeconds = 0` means the clock never decides — only staff do. This is a separate axis from
-the policy, which is why "keep the place forever" and "keep the place when the timer fires" are both
-expressible.
+The split follows two cuts, and only two:
 
-### 6.4 Lanes and call strategies
+* **By trigger, which the platform imposes.** API Gateway is synchronous and does not retry; a
+  stream blocks its shard until a batch succeeds; an SQS queue retries per message and needs its own
+  visibility timeout and DLQ. Mixing two sources in one function means configuring for the worse of
+  the two and coupling their failures: if email is down, the notifier's retries must not stop the push.
+  So each queue has its own consumer.
+* **By audience, inside the API.** Customers are anonymous, arrive in bursts when a QR is scanned,
+  and only need a handful of routes; staff are few, authenticated, and use everything. Different
+  exposure, different alarms, and the customer's path does not load the panel's code.
 
-A queue keeps a single QR code, but a restaurant does not serve a party of two and a party of eight
-from the same pool of tables. **Lanes** segment one queue into party-size bands, each with its own
-priority, capacity and pace.
+One function per endpoint was rejected: some 35 functions would each keep their own warm instances,
+so most invocations would start cold, and the usual advantage — a least-privilege role per function —
+does not exist in the lab, where every function runs as `LabRole`. Splitting by entity was rejected
+because what changes together would be in different functions: calling someone writes the entry and
+the queue's `META` in the same transaction.
 
-A lane carries a band (`minPartySize`..`maxPartySize`), a `priority`, a `capacityMode` — `PERSONS`
-counts people toward `maxSize`, `GROUPS` counts entries — and a `timeFactor` multiplying the queue's
-measured average service time, because a table of eight does not turn over as fast as a table of two.
-Active bands may not overlap; a joining group lands in the first active lane whose band contains its
-size. Migration `V3` puts every pre-existing queue into a single unsegmented lane named `1+`, so
-nothing that existed before behaves differently.
+Every function is built from `functions/src/handlers/<name>.ts` into its own bundle with esbuild. The
+domain (`src/domain`) is pure TypeScript with no AWS in it; `src/persistence` turns what the domain
+changed into DynamoDB writes.
 
-`QueueEntrySelector` decides who is next, and **both the real call and the ETA simulation go through
-it** — so the wait a customer is quoted is produced by the rules that will actually serve them.
-Three strategies:
+---
 
-| Strategy | Chooses |
+## 5. Data
+
+The full item and key layout is in [domain-model.md](domain-model.md#entities). The decisions that
+shape it:
+
+* **One partition per queue.** `QUEUE#<id>` holds the queue's `META`, its lanes and every entry, so a
+  change to a queue is a transaction inside one partition, and the board is one query.
+* **The sort key encodes the entry's state.** `W#<orderKey>` for waiting, `A#<entryId>` for called or
+  being served, `F#<finishedAt>#<entryId>` for finished. The line is a prefix query already in order;
+  the metrics for a date range are a range query on `F#`. Nothing is aggregated in advance.
+* **Order keys are fractional strings**, so inserting between neighbours never renumbers the line.
+* **Events have their own partition per queue**, ordered by the queue's version, and expire after 30
+  days through TTL. Only their insertion matters to the stream.
+* **No counters.** Every change already reads the queue's active entries, so capacity is counted on
+  what was read, under the same version. A stored count would be a second copy that can drift.
+* **Two tables, not one.** `q-connections` holds one item per open WebSocket, with a `byQueue`
+  index; it changes at a different rate, is never part of a queue's transaction, and its stream is
+  not needed.
+
+Both tables are on-demand, with point-in-time recovery on `q-main`, and no deletion protection,
+because the cátedra has to be able to destroy everything.
+
+---
+
+## 6. Concurrency and correctness
+
+### 6.1 Optimistic control per queue
+
+DynamoDB has no locks, so the queue's `META` item carries a `version`. Every operation reads it with
+the rest of the queue, decides in memory, and writes in one transaction that includes
+`version = :read` as a condition on `META`. DynamoDB transactions are serialisable among themselves:
+of two writers that read the same version, exactly one commits. The other gets
+`TransactionCanceledException`, re-reads and decides again, up to 8 times with backoff; then the API
+answers `409 CONCURRENT_MODIFICATION`, and nothing was written.
+
+The races this covers — two and three staff calling at once, two customers joining at once, two
+joins for the last place, a grace expiry while staff serve the person, a read crossing someone else's
+commit — are tested against DynamoDB Local in `functions/test/integration/races.test.ts`.
+
+### 6.2 The event is part of the change
+
+Each operation's events are items in its own transaction. So an event exists if and only if the
+change it describes committed: there is no "wrote the change, crashed before publishing" and no
+"published, then the write failed". DynamoDB Streams guarantees ordering per item, not across all
+event items of a queue. `stream-publisher` sorts each received batch by queue version and event key;
+that does not establish global order across batches or shards. SNS uses the event id for its
+five-minute deduplication window. Retries outside that window can deliver duplicates.
+
+References: [DynamoDB Streams ordering](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html)
+and [SNS FIFO deduplication](https://docs.aws.amazon.com/sns/latest/dg/fifo-message-dedup.html).
+
+### 6.3 Consumers decide from state
+
+Consumers use the event as a trigger and re-read the current queue state rather than applying
+blind deltas. This reduces the effects of duplicate or late events; it is not an end-to-end
+exactly-once guarantee. Lifecycle checks what is currently due, and the notifier claims
+`NOTIF#<type>#<cycle>` conditionally before sending. A failed claim can mean already sent, an active
+lease, or an exhausted attempt budget.
+
+SMTP delivery and marking the claim `SENT` are separate operations. If delivery succeeds and the
+function stops before persisting `SENT`, a later retry can resend after the lease expires. The
+application therefore cannot promise that a second email is impossible.
+
+### 6.4 Failure handling
+
+| Where | On failure |
 |---|---|
-| `GLOBAL_AGE` | The oldest group waiting, lanes ignored. The pre-lane behaviour. |
-| `LANE_PRIORITY` | Lowest lane priority first, oldest within it. |
-| `ROUND_ROBIN` | One lane at a time, rotating over the queue's lanes. |
-
-**The round robin rotates over every active lane, not over the lanes that happen to have someone
-waiting.** The cursor is a persisted index, so it only means anything if the list it indexes is
-stable. Indexing only the occupied lanes made the cursor change meaning whenever a lane emptied: with
-lanes A, B and C, serving A then B leaves the cursor at 2 — "C next" — but once A empties the list is
-two long, the cursor folds back to 0, B is served again and C is skipped. The lane most often empty is
-precisely the one the rotation exists to protect.
-
-`DELETE /queues/{id}` now **archives** rather than destroys: the queue is closed and hidden from
-listings, but its entries, events and notifications survive, so historical metrics stay honest.
-
-`DELETE /queues/{id}/lanes/{laneId}` follows the same principle for the same reason, and for one
-more. `queue_entry.lane_id` is `NOT NULL` and references `queue_lane` with no `ON DELETE` action, so
-every entry a lane has ever held — including customers served last week — pins that row. The guard
-counted only *active* entries, so deleting a lane that had simply been used passed its own check and
-then failed on the foreign key, surfacing as an unmapped 500 for the most ordinary case there is.
-
-It is now a soft delete: `deleted_at` is stamped, `active` is forced false, and the row stays. A
-database `CHECK` enforces that pairing so nothing can leave a retired lane in rotation. Keeping the
-row also keeps what makes the feature measurable afterwards — which band each finished customer was
-served in, and the `time_factor` that governed their estimate. No metric reads it yet; every per-lane
-metric will need it, and it cannot be reconstructed later.
-
-Three things make this safe without touching anything downstream. `QueueLane.accepts()` already
-required `active`, so nobody new is routed into a retired lane. `requeue` never re-resolves a lane,
-so "put back" works for someone whose lane was retired — it only needs the row to exist. And every
-call strategy falls through to an age-ordered pick across all waiting entries, so nobody in a retired
-lane becomes uncallable. Two smaller consequences: name uniqueness became a partial unique index over
-live rows only, because otherwise retiring a lane would burn its name for the lifetime of the queue;
-and every lane finder now excludes deleted rows, with the unfiltered versions *removed* rather than
-left alongside, so reading a retired lane by accident is a compile error rather than a judgement
-call.
+| Stream → `stream-publisher` | Reports the first pending stream sequence number; retries are bounded at 5 with a maximum record age of one hour. Discarded-invocation metadata goes to `q-stream-failures`, with an alarm. The source stream retains records for 24 hours |
+| SQS consumers | Return reported failures with `ReportBatchItemFailures`. Repeatedly failed messages can reach the DLQ after the redrive limit; errors caught and treated as success are acknowledged instead |
+| `q-push` | Alarms on oldest-message age above 10 seconds, evaluated with 60-second periods. This detects backlog, not each lost WebSocket send. Per-connection send errors are logged and swallowed by the broadcaster |
+| Notifications | Failed sends are recorded and reported for SQS retry, with a separate five-attempt claim budget. An exhausted or active claim is skipped; not every undelivered notice necessarily becomes a DLQ message |
 
 ---
 
-## 7. Concurrency and correctness
+The stream-failure queue retains metadata for 14 days; it is not a full-payload archive or an
+automatic replay mechanism. Recovery must locate the source record while it remains in the stream,
+or reconstruct the domain event from its stored event item if still available. No replay tool is
+implemented. See [AWS failure destinations](https://docs.aws.amazon.com/lambda/latest/dg/services-dynamodb-errors.html).
 
-### 7.1 One lock per queue
+## 7. Realtime
 
-Every mutation begins with `ServiceQueueRepository.findByIdForUpdate` — a
-`SELECT … FOR UPDATE` on the queue row, held for the transaction.
+The browser opens a WebSocket to the second API Gateway API with its credential in the URL — a
+customer's ticket token, or a staff member's one-time ticket from `POST /queues/{id}/ws-tickets` —
+because a browser cannot set headers on a WebSocket. `λ ws-connections` validates it on `$connect`
+and records the connection with the queue it watches; the queue is fixed at connect time, so there is
+no subscribe route.
 
-That single lock is what makes everything else safe:
+On every event of a queue, `λ broadcaster` (fed by the FIFO `q-push`, grouped by queue so events for
+one queue are processed in SNS publication order, one batch at a time) reads the queue's current state once and
+posts to each connection what it may see: staff get the board, each customer only their own ticket.
+A connection that API Gateway reports gone is deleted; connections whose `$disconnect` never arrived
+expire through TTL.
 
-| Race | Without the lock | With it |
-|---|---|---|
-| Two staff press "call next" | Both read the same front entry; one overwrites the other | Second transaction blocks; front entry is no longer `WAITING` |
-| Two customers join at the same instant | Both allocate ticket number 7 | Serialised; 7 and 8 |
-| Sweep fires while staff is acting | Interleaved policy application | Serialised |
-| Join races a `maxSize` check | Both pass the check; capacity exceeded | Count is read under the lock |
+The first view of every page comes over REST, not the socket, because a socket cannot report a
+status code. On every reconnection the page reloads over REST whatever it missed. API Gateway closes
+connections after ten idle minutes, so the page pings every five (answered by API Gateway with a mock
+integration, no Lambda), and after two hours in any case, so it reconnects with backoff. While the
+socket is down, the page polls.
 
-The lock is per queue, so unrelated queues never contend. It is the correct granularity for the
-domain: a queue is exactly the unit within which order matters.
-
-### 7.2 Lock before read, for entry-addressed operations
-
-`PUT /entries/{id}/status` names an entry, not a queue, so the queue to lock is not known upfront.
-The naive order — read the entry, then lock its queue — leaves a window where the entry's state
-changes between the two steps.
-
-`QueueEntryService.lockForEntry` instead resolves the queue id with a projection query over an
-immutable column, takes the lock, and *then* reads the entry:
-
-```java
-UUID queueId = entryRepository.findQueueIdByEntryId(entryId)…;
-ServiceQueue queue = lockQueue(queueId);
-accessGuard.requireMember(userId, queue.getEstablishment().getId());
-graceService.expireDue(queue);
-QueueEntry entry = entryRepository.findByIdWithQueue(entryId)…;  // read under the lock
-```
-
-### 7.3 What is deliberately *not* protected
-
-Reads outside a mutation (`GET /queues/{id}/board`) take the lock only because they may expire grace
-periods. Metrics queries take no lock at all — a count that is a few milliseconds stale is not worth
-serialising a dashboard for.
-
-### 7.4 Reads do not take the write lock
-
-The original design took the pessimistic queue lock on *every* path that might expire a grace period —
-including `TicketService.get`, `publicView` and `getSnapshot`, which are public read endpoints that
-almost never write.
-
-That was wrong in three separate ways. Every customer opening their ticket serialised behind the lock
-staff need to operate the line. `SELECT … FOR UPDATE` assigns a transaction id and writes the row
-header, so those reads cost WAL and dirty pages like writes. And a transaction blocked on the lock
-still holds its pool connection, so one busy queue could starve an instance for every other queue.
-
-`GraceService.expireDueIfAny` now **asks before it locks**, over `ix_entry_grace`, and takes the lock
-only when something is actually due — which is rare, because the background sweep already keeps the
-line moving. `getSnapshot` also authorises before expiring, so a non-member cannot cause work.
-
-The correctness argument is unchanged: expiry still happens under the lock. Only the *decision* that
-there is nothing to expire is now lock-free.
+A transient `PostToConnection` error need not close the browser socket. The broadcaster currently
+logs that error and acknowledges the message, while the browser disables polling on an open socket.
+The view may remain stale until another successful push, reconnection or reload. This is a known
+implementation limitation, not a recovery guarantee.
 
 ---
 
-## 8. Notification pipeline
+## 8. Security model
 
-```mermaid
-graph LR
-    A["Service decides a notification is due"] --> B{"Already sent this<br/>(entry, type, cycle)?"}
-    B -- yes --> Z["Do nothing"]
-    B -- no --> C["Resolve channel from<br/>available contact + enabled transports"]
-    C --> D["INSERT notification_record PENDING"]
-    D --> E["Record NOTIFICATION_SENT on the queue timeline"]
-    E --> F["Publish NotificationQueuedEvent"]
-    F -. "@TransactionalEventListener AFTER_COMMIT" .-> G["NotificationDispatcher<br/>REQUIRES_NEW transaction"]
-    G --> H{"Transport succeeds?"}
-    H -- yes --> I["markSent"]
-    H -- no --> J["markFailed + log"]
-```
+### 8.1 Two audiences, two models
 
-Three decisions:
+* **Staff** sign up and sign in against Cognito from the site's own pages, with
+  `USER_PASSWORD_AUTH` and no hosted UI. The id token goes in `Authorization` and API Gateway's Cognito
+  authorizer validates it before any function runs. Tokens last a 12-hour shift.
 
-**Delivery happens after commit.** Telling a customer "it's your turn" for a transaction that then
-rolls back is the worst failure this system could produce. `@TransactionalEventListener` with
-`REQUIRES_NEW` guarantees the change is durable first.
+  **Why the Lambda callback workaround from class does not apply.** That workaround exists because
+  Cognito's hosted UI redirects back with the tokens (or a `code`) to a callback URL that must be
+  HTTPS, and a site on S3 website hosting is plain HTTP; a `/callback` behind API Gateway and a Lambda
+  bridges the two. Neither condition holds here. There is no redirect: the sign-in form is ours and
+  calls Cognito's `InitiateAuth` directly over TLS, and Cognito returns the tokens in that response, so
+  there is no callback URL and no `code` to exchange. And the site is not on HTTP: API Gateway serves it
+  at a fixed `https://…execute-api…/prod/` address, so even with the hosted UI the callback could point
+  straight at one of our pages. What we give up without the hosted UI is its ready-made social sign-in
+  and MFA and recovery screens; in exchange, the password goes from the browser to Cognito and never
+  passes through our functions. The id token, not the access token, goes to the API because the Cognito
+  authorizer validates it as is; the access token would need OAuth scopes configured on every method.
+* **Customers** have no account. Their ticket token — unguessable, in the link they are emailed — is
+  their whole credential, and it only shows their own place in line.
 
-**A failed send never fails the request.** A broken SMTP server must not undo a legitimate queue
-movement. Failures are recorded on the row (`status = FAILED`, `failure_reason`) and surfaced
-through the API, not thrown.
+### 8.2 Authorisation is membership, read per request
 
-**`NotificationSender` is a seam, not an abstraction for its own sake.** Two implementations ship:
-SMTP, and an always-available logging transport. The logging transport is what makes the whole
-notification path — the record, the de-duplication, the audit event — exercisable end to end in
-tests and in the MVP without any provider account. Moving to SES, SNS or a WhatsApp provider is a
-new class behind the same interface, with no change above it.
+The token says who the caller is, not what they may do. `λ staff` reads the caller's membership of
+the establishment that owns the queue or entry **it read** — never of an id the client sent — on
+every request. Removing someone takes effect on their next request, not their next sign-in. Owners
+configure; staff operate.
 
----
+### 8.3 One secret
 
-## 9. Real-time delivery
+Cognito replaced the JWT secret and password hashing. DynamoDB, SNS, SQS and Secrets Manager are
+reached with the lab's IAM role. There is no database password and no API key.
 
-### 9.1 SSE over WebSocket and polling
+There is one secret, forced by the lab: because it denies SES, emails go through Gmail's SMTP server,
+which needs an app password of the group's account. It is treated as the TP2's correction asked
+("falta encriptar"): it lives only in a GitHub secret and, encrypted at rest, in Secrets Manager.
+Terraform creates the secret empty and the Apply job writes the value with the AWS CLI after the
+apply, because a value set through Terraform would be in plain text in the saved plan (a
+downloadable workflow artifact) and in the state. The notifier reads it when it sends, and it only
+travels over TLS. The lab session keys are also held in GitHub secrets. Separately, Terraform generates a demo
+staff password and stores it in state and saved plans. `sensitive = true` hides ordinary output
+but does not remove that value from those files. Access to state and artifacts must be controlled.
 
-| Option | Verdict |
-|---|---|
-| **Server-Sent Events** ✅ | Unidirectional, which is exactly the traffic shape: the server pushes state, commands go over REST. Plain HTTP, so proxies and load balancers need no special handling. Automatic browser reconnection. |
-| WebSocket / STOMP | Bidirectional machinery the app does not need, plus a second protocol to secure, proxy and reason about |
-| Polling only | Wasteful when idle and laggy when busy — the opposite of what a queue needs |
+### 8.4 Abuse limits
 
-Two streams exist, both keyed by queue because a single movement changes everyone behind it:
+API Gateway throttles every route below what the lab's Lambda concurrency can serve, so a burst gets
+429 instead of failing invocations. The two routes anyone can write to — join and leave — have a lower
+limit, and joining is also limited per IP per minute in the function. The site's files have a higher
+limit of their own: they invoke no Lambda, and a crowd scanning the same QR requests hundreds of them
+at once.
 
-| Stream | Event | Payload |
-|---|---|---|
-| `GET /queues/{id}/stream` | `queue.updated` | Same as `GET /queues/{id}/board` |
-| `GET /public/tickets/{token}/stream` | `ticket.updated` | Same as `GET /public/tickets/{token}` |
+### 8.5 Residual risks, stated plainly
 
-Reusing the REST payload verbatim means the client has one shape to parse and the stream is
-trivially debuggable with `curl`.
-
-### 9.2 The authentication wrinkle
-
-The browser `EventSource` API **cannot set request headers**, so a bearer token cannot travel the
-normal way. Options were: move the token to a cookie (needs a same-site proxy, which a static SPA on
-a CDN does not have), open an unauthenticated stream (unacceptable — the board carries customer
-contact details), or accept the token as a query parameter.
-
-Q accepts `?access_token=…` on the staff stream, via Spring Security's
-`DefaultBearerTokenResolver.setAllowUriQueryParameter(true)`. **The cost is real**: tokens can end up
-in access logs. It is mitigated by a 12-hour token lifetime and documented in both the API reference
-and the code. Behind a proxy that converts the token to a cookie, the setting can be turned off with
-no other change.
-
-The customer stream needs none of this: the ticket token in the path *is* the credential.
-
-### 9.3 Fan-out across instances: PostgreSQL LISTEN/NOTIFY
-
-`SseHub` holds emitters in a `ConcurrentHashMap` keyed by queue id — necessarily local to one JVM, since
-an open TCP connection cannot be shared. Behind a load balancer that creates a real problem:
-
-```
-Ana's phone ── SSE ──▶ EC2-a            EC2-a holds her connection
-Staff "call next" ───▶ EC2-b            the load balancer routed this elsewhere
-                        └─ writes to RDS, pushes to its own emitters — it has none for Ana
-```
-
-The database is correct; the *news* that it changed is trapped in one process.
-
-**The solution is the database itself.** Every instance opens one dedicated connection and issues
-`LISTEN queue_changed`. A change publishes `SELECT pg_notify('queue_changed', '<queueId>')` from
-inside its own transaction. On commit, PostgreSQL delivers to every listening instance, each of which
-rebuilds the affected payload from the database and pushes to whichever of its own connections care.
-
-Three properties make this the right fit rather than merely the cheap one:
-
-* **Transactional by construction.** PostgreSQL withholds a `NOTIFY` until commit and discards it on
-  rollback. The rule "never announce a change that did not stick" moves out of application code and
-  into the database. There is a test that publishes inside a rolled-back transaction and asserts
-  nothing is delivered.
-* **Duplicates collapse.** Identical notifications within one transaction are delivered once —
-  exactly right, because every listener rebuilds the whole board anyway.
-* **No state travels.** The payload is only a queue id. Listeners re-read from RDS, so a duplicated,
-  late or out-of-order message can trigger a redundant read but never a wrong screen.
-
-Delivery is **at-most-once**: an instance that is reconnecting hears nothing during the gap. That is
-survivable precisely because the client already falls back to polling whenever its stream is down and
-re-fetches on reconnect. The failure mode is "updates in five seconds instead of fifty milliseconds",
-never "updates that are wrong". Durable messages — the notification emails — do not use this path;
-they are rows in `notification_record`.
-
-The transport sits behind a `RealtimeBus` interface with two implementations, chosen by
-`q.realtime.mode`: `POSTGRES` in every deployed environment, and `LOCAL` (an in-JVM Spring event) in
-the test suite, where a real round-trip would only add latency and non-determinism.
-
-**Operational notes.** The listening session needs its own connection, outside HikariCP — borrowing
-one from the pool and never returning it would permanently shrink the pool. `NOTIFY` payloads are
-capped at 8000 bytes (we send a 36-character UUID). It does not work through RDS Proxy, and
-notifications are not replicated to read replicas, so both the publisher and the listeners use the
-writer endpoint.
-
-A 20-second heartbeat comment keeps idle connections alive through intermediaries.
-
-### 9.4 The cost of a fan-out, measured
-
-A queue movement has to reach the staff board and every customer watching their own ticket. The
-obvious implementation loops over subscribers and rebuilds each view independently — and that was the
-first implementation here. Measured on a real queue of 23 people, counting the SQL statements caused
-by a single "call next":
-
-| Watchers | Statements — naive | Statements — current |
-|---|---|---|
-| 0 | 15 | 15 |
-| 2 | 23 | 20 |
-| 4 | 29 | 20 |
-| 8 | 40 | 19 |
-| 12 | **66** | **19** |
-
-The naive shape fits `≈ 14 + 4 × watchers`. Four queries per subscriber, of which **three returned
-identical results for every one of them** — the queue's average service time, how many people are
-being served, and the waiting list are facts about the queue, not about the watcher.
-
-So database load grew with the size of the audience rather than with the amount of work being done.
-Forty people watching one queue meant roughly forty times the queries for the same information.
-
-`QueueService.readBroadcast` assembles the whole fan-out in one pass instead. The queue, its line and
-its average service time are read once; every customer's view is derived from that. A second saving
-follows from the first: **a watcher still in the line is already among the entries loaded for the
-board**, so their view costs no query at all. Only watchers whose entry has just left need fetching,
-and those go in a single batched statement.
-
-The result is flat — twelve watchers cost what one does, and the residual variation is the SSE
-subscription itself, not the broadcast. Extrapolated to a forty-person queue that is roughly 175
-statements per movement reduced to about 20.
-
-This is worth stating plainly in a document about cloud architecture: the fix was in the application,
-not the infrastructure. A larger database instance would have bought the same headroom for money,
-permanently, and left the amplification in place.
-
-### 9.5 Scheduling refreshes: one thread must not do the work
-
-Receiving a notification and acting on it are different jobs, and they were originally the same
-thread. That thread's real responsibility is to keep reading the database connection. When it also
-rebuilt queues and wrote to sockets, two problems followed:
-
-* **Queues became coupled.** Twenty queues changing at once were refreshed one after another, so a
-  slow one delayed every other queue on that instance.
-* **One bad client could stop everything.** `SseEmitter.send` writes to a socket and blocks if the
-  client's receive window is full. A single customer on a poor connection would stall updates for
-  every queue the instance was serving.
-
-`BroadcastCoordinator` separates the two. The listener decodes the notification and hands off; the
-refresh runs on a **virtual thread**, where a blocked write parks cheaply instead of holding a
-scarce resource. A stalled queue now stalls only itself — there is a test that asserts exactly that.
-
-**Running refreshes in parallel then requires ordering to be re-established**, or two refreshes of
-the same queue could overlap and publish an older view after a newer one. The coordinator keeps at
-most one refresh per queue in flight; anything arriving meanwhile only marks the queue dirty, and one
-follow-up runs when the current refresh finishes. That single rule delivers ordering *and*
-coalescing, which is why there is no revision counter on the payload: with per-queue serialisation an
-older view cannot be published after a newer one, so a counter would guard a race that cannot happen.
-
-In front of that sits a short window — `q.realtime.coalesce-window`, 200 ms by default — so a burst
-of arrivals becomes one push rather than one per arrival. This is safe **because a refresh reads
-current state rather than replaying an event**: one refresh after ten changes carries the same answer
-as ten would have, sent once. The cost is 200 ms of added latency on an update, which is invisible
-next to the human timescale of a queue.
-
-**Honest scope.** At restaurant pace this changes almost nothing — staff act every few seconds, and
-each action already produced one refresh. It earns its place in bursts, chiefly a QR code being
-scanned by many people at once, and in removing the head-of-line blocking above, which was a risk at
-any load rather than only under pressure.
+* The staff token is in `localStorage`, readable by any script on the page. A static site on API
+  Gateway has no server of its own to hold an `HttpOnly` cookie.
+* Per-function least privilege is impossible in the lab: every function runs as `LabRole`.
+* The per-IP join limit trusts API Gateway's view of the source IP, which is right, but many
+  customers behind one NAT share it.
 
 ---
 
-## 10. Security model
+## 9. Error model
 
-### 10.1 Two authorisation models, deliberately different
-
-| | Customers | Staff |
-|---|---|---|
-| Credential | Opaque `ticket_token` (UUID v4) in the URL | JWT bearer token |
-| Scope | Exactly one queue entry | Every establishment they are a member of |
-| Lifetime | Life of the entry | 12 hours |
-| Storage | The link itself, plus whatever the customer keeps | `localStorage` |
-| Revocation | Deleting the entry | Expiry |
-
-The ticket token is a **capability**: unguessable, scoped to one entry, and revealing nothing about
-anyone else in the line. It is deliberately not an account — the proposal's whole premise is "datos
-mínimos", and an anonymous capability is the smallest thing that can work. `TicketView` exposes only
-the holder's own data; the waiting list is staff-only.
-
-### 10.2 Authorisation is membership, not a role claim
-
-A token proves *who you are*; the `membership` table proves *what you may touch*. Every service
-method that reaches an establishment or queue starts at `AccessGuard`:
-
-* `requireMember` — any role. Operating queues is the `STAFF` job.
-* `requireOwner` — configuration, member management, queue creation and deletion.
-
-Roles are not baked into the JWT, so revoking someone's access takes effect on their next request
-rather than on their next login.
-
-### 10.3 JWT specifics
-
-* **HS256** with a symmetric secret, validated to be ≥ 32 bytes at startup — a misconfigured secret
-  fails at boot rather than silently weakening every token.
-* Issued and validated through **Nimbus JOSE**, already on the classpath via Spring Security, so no
-  additional JWT dependency.
-* **Expiry is validated against the injected `Clock`**, not the system clock. This keeps one notion
-  of time across the whole application and makes token lifetime directly testable — there is a test
-  that advances the clock thirteen hours and asserts a 401.
-* Passwords are BCrypt.
-
-### 10.4 Residual risks, stated plainly
-
-* Ticket links are bearer capabilities: anyone with the link controls that ticket. Acceptable — the
-  worst case is losing a place in a queue — and it is the price of not making customers sign up.
-* No rate limiting on the public join endpoint. A real deployment should put one at the edge.
-* Tokens in query strings on the SSE endpoint, as discussed in §9.2.
+Every error the functions return is RFC 7807 `application/problem+json` with a stable `code`, the
+same contract the Java API had, so the frontend did not change. Domain errors carry their kind
+(validation 400, forbidden 403, not found 404, conflict 409); a cancelled transaction becomes 409
+`CONCURRENT_MODIFICATION`; anything else is a logged 500. Null fields are omitted. The list of codes
+is in [api-reference.md](api-reference.md#errors).
 
 ---
 
-## 11. Error model
-
-Every failure — including those raised inside the security filter chain, which
-`@RestControllerAdvice` cannot see — is returned as RFC 7807 `application/problem+json`:
-
-```json
-{
-  "type": "https://q.itba.ar/problems/queue-full",
-  "title": "Conflict",
-  "status": 409,
-  "detail": "This queue has reached its maximum size",
-  "instance": "/api/v1/public/queues/…/entries",
-  "code": "QUEUE_FULL",
-  "timestamp": "2026-03-02T15:00:00Z"
-}
-```
-
-The non-standard `code` is the important part: it is **stable and machine-readable**, so the SPA
-branches on `QUEUE_FULL` rather than pattern-matching English prose. Field-level failures add an
-`errors` object keyed by field name. The full code list is in
-[api-reference.md](api-reference.md#errors).
-
----
-
-## 12. Frontend architecture
+## 10. Frontend
 
 Detail lives in [frontend.md](frontend.md); the architectural decisions are here.
 
-### 12.1 Static export, and what it costs
+**Static export.** `next build` with `output: 'export'` produces plain HTML, CSS and JS, uploaded by
+Terraform to the site bucket and served by API Gateway. No Next.js server runs anywhere. A static
+export cannot pre-render pages for ids that do not exist at build time, and the site has no rewrite
+rules, so every id travels in the query string: `/q/?id=…`, `/t/?token=…`, `/panel/queue/?id=…`.
 
-`next build` with `output: 'export'` produces plain HTML/CSS/JS. **No Next.js server runs in
-production**, so the Spring API is the only live process in the system. For a course arguing
-static-first cloud economics this is the honest position: idle cost is essentially zero, and scaling
-the frontend is a CDN concern rather than a capacity-planning one.
+**Runtime configuration.** The Cognito ids and the WebSocket address only exist after the apply, and
+the site is built before it. Terraform writes them to `config.json` next to the site, and the page
+reads it once per load — so one build works in any account.
 
-The cost is that a static export cannot pre-render `/q/{queueId}` for ids that do not exist at build
-time. Three options were considered:
+**First-party data layer.** No query library, no state library, no component library: a typed API
+client that turns problem responses into an `ApiError` with the `code`; a hook that keeps one resource
+in sync (REST first, then the WebSocket, polling only while the socket is down); and the Cognito calls
+over `fetch`.
 
-| Option | Trade-off |
-|---|---|
-| **One shell page per public route + CDN rewrite** ✅ | Clean printable URLs; costs exactly two hosting rules |
-| Query-string URLs (`/q?queue=…`) | Zero hosting config; uglier links on a printed poster |
-| Node server (SSR) | Solves it entirely; reintroduces always-on compute for features this app never uses |
-
-The two customer URLs are the only ones a human ever sees — one is printed on a poster, the other
-arrives in a message — so they got the clean paths. Staff URLs carry ids in the query string and
-need no configuration. `next.config.ts` mirrors the production rewrites in `next dev`, so the two
-environments behave identically.
-
-### 12.2 First-party data layer
-
-No TanStack Query, no Redux, no component library. Three small modules do the work:
-
-* **`lib/api.ts`** — typed client that converts RFC 7807 responses into an `ApiError` carrying the
-  stable `code`.
-* **`lib/useLiveResource.ts`** — one resource kept in sync. The first read is a plain `fetch`, not
-  the stream, because `EventSource` cannot report a status code and a missing ticket must surface as
-  "this ticket does not exist" rather than a silent connection failure. The stream then pushes every
-  change, and **polling runs only while the stream is down** — so a proxy blocking
-  `text/event-stream` degrades speed, not correctness.
-* **`lib/auth.tsx`** — session restore with an `initialising` flag, so reloading the board never
-  bounces a signed-in operator back to the sign-in screen.
-
-### 12.3 Design language — "warm hospitality"
-
-The customer holds this on a phone, often outdoors, usually for a single glance: *how many are ahead
-of me, and how long?* Every choice follows from that question.
-
-* **Warm, low-glare surfaces** (sand `#fdfbf7`, espresso `#2b211c`) rather than clinical white and
-  blue-grey — the product lives in restaurants, not in a dashboard.
-* **One number, enormous.** The position is set in Fraunces at ~100px; everything else recedes so
-  the hierarchy survives a two-second look. When the turn arrives the screen stops being an
-  information display and becomes a single instruction on a full-bleed terracotta field.
-* **Colour carries meaning, not decoration.** Terracotta means "you" — the customer's own position
-  and primary actions. Sage means settled. Amber means attention. Red appears only where something
-  was actually lost.
-* **Tabular numerals everywhere numbers change**, so a moving queue does not make columns jitter.
-* **Semantic tokens only** — never a raw hex in a component. Dark mode re-points the same tokens
-  under `prefers-color-scheme`, so each component is written once and is correct in both themes.
-
-### 12.4 Language (cross-cutting)
-
-Q speaks English and Spanish (rioplatense). The rule is that **a customer's language is a property of
-their visit, not of the browser session**, because a notification sent an hour after someone joined
-must match the page they were reading when they took their place.
-
-* **Frontend.** A first-party dictionary and context — no i18n dependency. English is the source of
-  truth and `MessageKey` is derived from it, so the Spanish bundle is typed as a *complete* record of
-  those keys: a missing translation is a compile error, not something a user discovers. Resolution is
-  an explicit choice (persisted) → `navigator.language` → English, with a switcher for when detection
-  guesses wrong.
-* **Backend.** The resolved locale travels in the join request (falling back to `Accept-Language`) and
-  is stored on `queue_entry`. Notification copy lives in Spring `MessageSource` bundles and is
-  rendered per entry. An unrecognised language falls back to English rather than failing — nobody is
-  turned away over a locale header.
-
-The one visible trade-off: pages are prerendered in English at build time, so a Spanish browser sees
-one frame of English before hydration swaps it. Resolving earlier would make the client's first render
-disagree with the served HTML.
-
-**Not translated:** data the business owns — queue names, descriptions, establishment names. Those are
-shown exactly as the owner typed them.
-
-`next-intl` was rejected because it wants `[locale]` route segments, which fight the single-shell
-static export described in §12.1.
+**Language.** English and Spanish. A customer's language is a property of their visit: the page sends
+it with the join, it is stored on the entry, and every email to that customer is rendered in it.
+English is the source of truth and Spanish is typed as a complete record of it, so a missing
+translation is a compile error.
 
 ---
 
-## 13. Testing strategy
+## 11. Testing strategy
 
-**118 tests, all passing.** Two tiers, chosen for what each is actually good at:
+**132 tests, in two tiers**, run on every push by the pipeline:
 
-| Tier | Tools | Covers |
+* **Unit** (`functions/test/domain`, `handlers`, `notifications`) — the pure rules: ordering keys,
+  the selector, estimation, lanes, requeue, metrics; plus the stream publisher and the Gmail mailer
+  with fake clients. Fast and exhaustive.
+* **Integration** (`functions/test/integration`) — the handlers end to end with API Gateway events
+  built by hand, the stores, the stream consumers, and the races, all against a real DynamoDB Local
+  started by Testcontainers. Real because the conditional transactions, the key order and the stream
+  are exactly what an in-memory fake would get wrong. Only Cognito is faked.
+
+After every apply, the pipeline's **smoke test** exercises the deployed system: health, the site, the
+404 page, `config.json`, and a customer joining, reading their ticket and leaving with the WebSocket
+open until the push arrives.
+
+The frontend has no automated tests; it is verified by hand against a deployed stack.
+
+---
+
+## 12. Deployment
+
+Terraform, run only by GitHub Actions on the pull request: validate and build on every push, plan
+with the lab's credentials, apply the saved plan after an approval, destroy with a label. The state
+is in an S3 bucket per account with native locking. Three of our own modules (`private-bucket`,
+`lambda-function`, `queue-with-dlq`) and one external (`terraform-aws-modules/dynamodb-table`). The
+pipeline creates the three S3 buckets itself, because the lab denies a read the provider needs after
+creating one. Procedure in [deployment.md](deployment.md).
+
+---
+
+## 13. Decision log
+
+| Decision | Chosen | Rejected, and why |
 |---|---|---|
-| Unit | JUnit 5 + Mockito | `EstimationService` (fallback, averaging, stations, rounding), `QueueOrdering` (gaps, midpoints, renormalisation), `EntryStatus` classification |
-| Integration | `@SpringBootTest` + MockMvc + Testcontainers PostgreSQL | The whole API against a real database: full lifecycle, all four no-show policies, authorisation, join validation, notification de-duplication |
-
-Three choices worth naming:
-
-**A real PostgreSQL, not H2.** The pessimistic locking, the `CHECK` constraints and the Flyway
-migration are all things H2 would either fake or skip — precisely the parts most worth testing.
-
-**A controllable clock.** `MutableClock` replaces the `Clock` bean, so grace expiry, metrics windows
-and token expiry are asserted by advancing time rather than by sleeping. Tests that would otherwise
-be slow and flaky are instant and deterministic.
-
-**Tests are not wrapped in a rolled-back transaction.** The code under test depends on real commits
-— pessimistic locks and after-commit notification delivery — so a `DatabaseCleaner` truncates
-between tests instead. Slower, and correct.
-
-**Gap:** the frontend has no automated tests. It was verified by hand against the running stack,
-including live SSE updates and grace-policy expiry. Playwright against the real stack is the obvious
-next step.
+| Compute | Lambda | EC2 behind a load balancer (the TP2): always-on cost, NAT, a database instance, and per-instance state for live updates |
+| Function language | TypeScript on Node 22 | Java with SnapStart, as the design proposed: sub-second cold starts only with snapshots, a second language, and Maven modules to share the domain. The domain was ported instead, with its tests |
+| Database | DynamoDB, single table | RDS: an instance billing idle, a VPC and a password. Every access is per queue, which fits a partition per queue |
+| Concurrency | Optimistic, a version on the queue | Locks do not exist in DynamoDB; a lock item would add a write and a failure mode |
+| Ordering | Fractional string keys | Integers 1000 apart (the TP2): renormalising rewrites the whole line, and a transaction takes 100 items |
+| Publishing events | Event items in the change's transaction, read from the stream | Publishing after the write: loses events on a crash in between, or announces changes that rolled back |
+| Notifications | Decided from state by a consumer | Inside the staff transaction (the TP2): one movement can make dozens cross a threshold, which does not fit in a transaction |
+| Live updates | API Gateway WebSocket | Server-Sent Events: need a process holding the connection. Polling alone: slower and more invocations |
+| Staff auth | Cognito, validated by API Gateway | A Lambda authorizer and our own JWT: a secret to store, password hashing to maintain, and an invocation for every request the cache misses |
+| Staff sign-in | Our own form, `USER_PASSWORD_AUTH` against Cognito | The hosted UI with a `/callback` Lambda (the workaround from class): it solves an HTTP site needing an HTTPS redirect, and ours is already HTTPS with no redirect at all (§8.1) |
+| Channels | Email, through Gmail's SMTP server in the Learner Lab (SES where allowed) | SES alone: the lab denies it to every role, so nothing would be delivered. Web Push, which the design proposed: a service worker and VAPID keys. SMS: sandboxed |
+| Serving the site | API Gateway from a private S3 bucket | CloudFront: blocked in the lab. S3 website hosting: needs a public bucket, and plain HTTP |
+| Grace expiry | Delayed SQS message, plus lazy on read and write | Only lazy (the read path): a queue nobody looks at would never move. Only the timer: a page could show a call the clock already invalidated |
+| Bucket creation | The pipeline, with the AWS CLI | `aws_s3_bucket`: fails in the lab, the SCP denies a read the provider makes after creating it |
+| Function split | By trigger, then by audience in the API | One per endpoint, one for everything, by entity, CQRS (§4) |
 
 ---
 
-## 14. Cloud deployment
+## 14. Known limitations
 
-### 14.1 Target architecture
-
-```mermaid
-graph TD
-    U["Customers and staff"] --> CF["CloudFront"]
-    CF --> S3["S3 — static export<br/>2 rewrites: /q/* /t/*"]
-    CF --> ALB["Load balancer"]
-    ALB --> ECS["API — container tasks"]
-    ECS --> RDS[("RDS PostgreSQL")]
-    ECS --> SES["SES / SNS — notifications"]
-    ECS -.-> REDIS[("Redis pub/sub<br/>needed only for >1 replica")]
-```
-
-### 14.2 Why this shape
-
-The proposal's own argument is that demand is spiky — lunch and dinner rushes — and that a cloud
-architecture should scale with load and cost nothing when idle. The split above follows that:
-
-* **The frontend has no runtime.** It is objects in a bucket behind a CDN. Its cost does not vary
-  with traffic in any way that matters at this scale, and there is nothing to scale up before a
-  rush.
-* **The API is stateless apart from SSE emitters**, so it scales horizontally on task count.
-* **The database is the only stateful component**, and the per-queue row lock means concurrency
-  correctness does not degrade as replicas are added.
-
-### 14.3 What makes the application deployable
-
-The code carries no AWS SDK and no AWS-specific class. What it does carry is the behaviour a managed
-environment expects from anything it is going to start, stop and replace on its own.
-
-| Concern | What the application does | Why it matters on EC2 behind an ALB |
-|---|---|---|
-| **Configuration** | Everything environment-driven; `prod` gives `DB_URL`, `DB_PASSWORD` and `JWT_SECRET` no defaults at all | A missing secret fails at startup with a named placeholder, rather than silently running on a development value. Verified: the `prod` profile with no environment exits non-zero. |
-| **Graceful shutdown** | `server.shutdown: graceful`, and live streams are closed on `ContextClosedEvent` — *before* the shutdown wait begins | A terminating instance releases its SSE clients immediately so they reconnect through the load balancer, instead of holding them for the full 25-second window. Measured: shutdown completed in 6 ms, not 25 s. |
-| **Health, split two ways** | `/actuator/health/liveness` (process only) and `/actuator/health/readiness` (includes the database) | The load balancer polls readiness, so an instance that cannot reach RDS is taken out of rotation instead of returning errors. Instance *replacement* is driven by EC2 status checks, so a database blip degrades the service rather than destroying the fleet. |
-| **Mail excluded from health** | `management.health.mail.enabled: false` | Found by a failing test. The default indicator made the whole instance report DOWN when SMTP was unreachable — which would have let the load balancer deregister a fleet that was serving queues perfectly. It also contradicted the application's own rule that a failed notification never undoes a queue movement. |
-| **Proxy awareness** | `forward-headers-strategy: framework` | Two proxies sit in front (CDN, load balancer). Without this the application believes every request arrived over plain HTTP from the load balancer's own address. |
-| **Streams survive the CDN** | `Cache-Control: no-cache, no-store, no-transform` and `X-Accel-Buffering: no` on both SSE endpoints | An event stream is a response that is deliberately never finished — exactly what an intermediary likes to buffer. Either proxy holding bytes back would turn live updates into nothing at all. |
-| **Instance identity** | `X-Instance-Id` on every response, the id in every log line, and on `/actuator/info` | Makes "which instance answered?" answerable — in merged CloudWatch logs, and in the live demo where the load balancer's distribution has to be shown rather than asserted. |
-| **Connection budget** | Hikari capped at 10, plus one connection per instance for LISTEN/NOTIFY, recycled below typical idle timeouts | A `db.t3.micro` allows on the order of a hundred connections; the fleet must fit inside that with room to spare. |
-| **Concurrent migrations** | Flyway on every instance | Safe by design: Flyway takes a PostgreSQL advisory lock, so instances starting together serialise instead of racing. |
-
-**Deliberately not done:** no AWS SDK, no `spring-cloud-aws`, no Parameter Store client in the
-application. Secrets are read from SSM by EC2 user-data at boot and written into the systemd unit's
-environment file. The application stays a plain twelve-factor process that runs identically on a
-laptop, and nothing about it needs AWS permissions to start.
-
-### 14.4 Running more than one instance
-
-Horizontal scaling works today. The cross-instance blocker — SSE fan-out — is solved by
-LISTEN/NOTIFY (§9.3), verified by running two instances against one database: a customer streaming
-from instance A receives a change made entirely on instance B, and with the transport forced to
-`LOCAL` that same update is provably lost.
-
-Two smaller items remain:
-
-1. **`GraceSweepJob`** — every instance runs it. Correctness is preserved by the per-queue lock (the
-   second instance finds nothing left to expire), but the duplicated work is wasteful; a leader
-   election or a scheduled cloud trigger would remove it.
-2. **`JWT_SECRET`** must come from a parameter store and be identical across instances, or tokens
-   issued by one instance will be rejected by another.
-
-Neither touches business logic, which is the point of having isolated them behind seams.
-
-### 14.5 Container image, and the metric autoscaling needs
-
-The API ships as a container: a multi-stage build leaving the JDK, Maven and sources behind, with the
-jar exploded into layers on a JRE base and running as a non-root user. Tests are skipped inside the
-build because Testcontainers needs a Docker daemon the build does not have — `mvn test` runs outside
-it. `.dockerignore` keeps `.env` out of the image, so the same image runs locally and on an instance
-with configuration supplied at run time.
-
-On EC2 systemd starts the container (`backend/queue-container.service`), and the image moves by
-`docker save` / `docker load` rather than through a registry — one fewer service to justify, and no
-credentials on the instance.
-
-Configuration also comes from a `.env` file read natively through `spring.config.import`, with
-`/etc/queue/queue.env` read the same way on a deployed instance. Both imports are optional, so tests
-and CI still run on the defaults.
-
-**`q.sse.connections`** is exported on `/actuator/metrics`, tagged by audience. It is the number of
-open streams an instance is holding — and per §16, that is the resource this system actually runs out
-of, not database throughput. It is therefore the metric any autoscaling policy has to be calibrated
-against. Actuator exposure is `health,info,metrics`, and `SecurityConfig` leaves only health and info
-public, so reading it needs a staff token.
-
----
-
-## 15. Decision log
-
-| # | Decision | Alternatives considered | Rationale | Consequence |
-|---|---|---|---|---|
-| 1 | Spring Boot 3.5 on Java 25 | Spring Boot 4.1 | 3.5 fully supports Java 25 and is the mature line; Boot 4 was more API drift than an MVP needed | Upgrade path stays open; nothing in the code blocks it |
-| 2 | One pessimistic lock per queue row | Optimistic locking with retries; application-level mutex | The domain's correctness unit *is* the queue; retry loops would complicate every mutation | Unrelated queues never contend; hot single queue serialises |
-| 3 | Derived positions, sparse order keys | Stored dense positions | A stored position can disagree with the line; sparse keys make a reorder O(1) instead of O(n) | Rare renormalisation path, unit-tested |
-| 4 | Anonymous ticket-token capability | Customer accounts; phone-number lookup | "Datos mínimos" is a stated requirement; an unguessable capability is the smallest thing that works | Whoever holds the link controls the ticket |
-| 5 | Contact channel required at join | Name only | The ticket link is the recovery mechanism; without a channel it cannot be delivered | Enforced at DTO, service and schema |
-| 6 | SSE for live updates | WebSocket/STOMP; polling | Traffic is unidirectional; SSE is plain HTTP and reconnects itself | Token must ride in a query param for staff |
-| 6b | PostgreSQL LISTEN/NOTIFY for cross-instance fan-out | ElastiCache Redis pub/sub; SNS; database polling | Redis pub/sub offers *identical* at-most-once semantics for ~$12/mo and a new failure domain; RDS is already in the architecture and adds the transactional guarantee for free | At-most-once delivery, tolerated by the client's polling fallback; rules out RDS Proxy |
-| 7 | Notifications delivered after commit | Inline within the transaction | Never tell someone "it's your turn" for a transaction that rolls back | Failures are recorded, never propagated |
-| 8 | De-duplication by `(entry, type, cycle)` | Timestamp-based throttling | Structural and exact; a requeued customer is legitimately notified again | One extra counter column |
-| 9 | Grace expiry both lazy and swept | One or the other | Lazy alone stalls unwatched queues; sweep alone shows stale state on read | Two call sites, one shared implementation |
-| 10 | Closing a queue releases the line | Freeze entries in place | Leaving people holding a place in a queue that stopped operating is worse than telling them | Documented; notifies everyone affected |
-| 11 | Static export for the SPA | SSR on a Node container | No idle compute; matches the course's cloud-economics argument | Two CDN rewrite rules for the printable URLs |
-| 12 | Clean paths for customer URLs only | Query strings everywhere | Only two URLs are ever printed or shared; staff URLs are not | Hosting config stays at exactly two rules |
-| 13 | Read models reused as responses | A second DTO layer | The entity boundary is already enforced; a mirror record would only drift | Documented as intentional |
-| 14 | Real PostgreSQL in tests | H2 in-memory | Locks, CHECK constraints and migrations are the parts worth testing | Docker required to run the suite |
-| 14b | Multi-AZ RDS, single writer, no read replicas | Single-AZ; read replicas; Aurora | Multi-AZ is bought for *maintenance*, not disasters: on single-AZ, AWS patching is downtime, and demand here is spiky and synchronised across every establishment. Replicas were rejected on product grounds, not cost — replication is asynchronous and Q displays a live position, so a stale read is a visible correctness bug, not a slow one | Doubles the database cost and adds minutes to stack creation; buys availability and no extra capacity |
-| 17 | Lanes segment a queue, one QR code | Separate queues per party size; no segmentation | A restaurant does not serve parties of two and eight from one pool of tables, but customers should still scan one code | Overlapping bands must be rejected; every legacy queue migrates into a `1+` lane |
-| 18 | Round robin rotates over all active lanes | Rotate only over lanes with someone waiting | A persisted cursor is an index; indexing a list that changes length makes it mean something different each call, and it starves exactly the lane the rotation protects | Empty lanes are visited and skipped, which is cheap |
-| 19 | Reads ask before they lock | Keep the write lock on every path that might expire | Public reads serialised behind the lock staff need, cost WAL like writes, and held pool connections while blocked | Expiry still happens under the lock; only the "nothing to do" decision is lock-free |
-| 20 | `DELETE /queues/{id}` archives | Hard delete | Destroying a queue destroys the history its metrics are computed from | Archived queues are hidden, not gone; storage grows |
-| 21 | Ship the API as a container, moved by `docker save` | Jar under systemd; a registry (ECR) | One artifact that runs identically everywhere, without adding a registry service to justify or credentials on the instance | The CloudFormation user-data still installs a jar — see gotchas |
-| 15 | Injected `Clock` everywhere | `Instant.now()` | Makes grace periods, metrics windows and token expiry testable without sleeping | Includes JWT validation |
-| 16 | English in code and API, interface in both languages | Spanish throughout; English throughout | One language across code and API avoids a translation seam mid-stack, but the customer's language is a property of the *customer*, not the deployment | Notification copy is localised from the locale stored on the entry |
-| 22 | Lanes are soft-deleted | Hard delete; `ON DELETE SET NULL`; no delete at all | `queue_entry.lane_id` is NOT NULL and references the lane, so every entry it ever held — including finished ones — pins the row: the old guard counted only *active* entries, passed, and then died on the foreign key as an unmapped 500. Keeping the row also keeps what makes the feature measurable later: which band each finished customer was served in, and the `time_factor` in force at the time. `SET NULL` was rejected because two view-factory call sites dereference the lane unguarded | Name uniqueness became a partial index over live rows; every lane finder excludes deleted rows and the unfiltered ones were removed so reading one is a compile error |
-| 23 | One monotonic ticket orders every write to a live resource | Timestamps; last-write-wins; a revision from the server | Three writers race on the client — first load, explicit refresh, and the stream — and a poll issued while the stream was down could resolve after a newer pushed snapshot and roll the board back. On a queue that looks like a served customer reappearing | A read whose ticket is older than what has been applied is dropped, silently and by design |
-| 24 | A 401 anywhere ends the staff session | Handle it per call site; a refresh token; ignore it | A twelve-hour token expires mid-shift, not between sessions. Ignoring it left the board rendering a stale snapshot of customer names and emails with every action failing and no route back to sign-in | `api.ts` drops the token, which notifies `subscribeToToken`; the same channel plus a `storage` listener makes sign-out reach other tabs |
-| 25 | The join page polls while visible | Leave it static; an SSE stream like every other screen | It is the screen that answers "is this worth the wait?" and the one most likely to be left open while somebody decides, yet it fetched once and never again — a paused or full queue was a permanent dead end until a manual reload. A stream per undecided visitor is a connection the app tier cannot afford; the numbers change on the scale of minutes | One small public read every 15s per open page, suppressed while the tab is hidden and fired immediately on `visibilitychange` |
-| 26 | Interface colours are chosen against a measured contrast floor | Judge them by eye | Four token pairs failed WCAG AA in light mode, `faint` on `raised` at 2.59:1 while carrying every hint and timestamp. A palette that reads well on a designer's screen is not evidence | Fixing `faint` forced `muted` to darken too, or the two tiers would have collapsed; `brand` on `brand-soft` now sits at 4.52:1, with little headroom |
-
----
-
-## 16. Known limitations
-
-| Limitation | Impact | Path forward |
-|---|---|---|
-| Realtime delivery is at-most-once | An instance reconnecting misses pushes | Already tolerated: the client polls while its stream is down |
-| `GraceSweepJob` runs on every instance | Duplicated work, not incorrect | Leader election or a scheduled cloud trigger |
-| Staff SSE token in query string | Tokens may appear in access logs | Cookie via same-site proxy |
-| No frontend test suite | Regressions caught by hand only | Playwright against the real stack |
-| No rate limiting on public join | Abuse vector on an open endpoint | Edge rate limiting |
-| Metrics computed in Java over a row set | Fine at MVP volume; O(n) on range size | Pre-aggregated daily rollup table |
-| SMS/WhatsApp not implemented | Phone-only customers fall back to the log transport | New `NotificationSender` implementation |
-| Single-establishment UI switching | Multi-establishment owners switch via a dropdown only | Fuller establishment management screens |
-| No opening-hour schedules | Queues are opened and closed by hand | `schedule` on `service_queue` + sweep |
+* **The lab's credentials expire** with each session and have to be loaded into the secrets by hand.
+  A normal account would use an OIDC role, which the lab cannot create.
+* **Emails depend on a Gmail account.** The lab denies SES, so they go out through Gmail's SMTP
+  server: subject to Gmail's daily limit for a personal account, with bounces landing in the group's
+  inbox, and simulated in the notifier's log if the account is not configured.
+* **No SMS.** A customer who leaves only a phone number gets no notifications.
+* **Every deployment changes the site**: the Next.js build ID is random, so about 75 objects are
+  re-uploaded, and the REST API redeployed, even when the frontend did not change.
+* **One race test is flaky**, about once in 30 runs, without a reproduced cause; it is not the
+  optimistic control, which is what it tests.
+* **Historical metrics are out of scope** for this delivery (Firehose, S3, Glue, Athena are future
+  work); the panel's numbers come from the finished entries of the last seven days at most.
+* **No frontend tests.**

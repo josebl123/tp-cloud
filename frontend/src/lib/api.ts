@@ -1,6 +1,7 @@
+import { loadRuntimeConfig } from './config'
 import { getToken, setToken } from './session'
 import type {
-  AuthResult,
+  UserView,
   EntryStatus,
   EntryView,
   EstablishmentView,
@@ -20,7 +21,12 @@ import type {
   TicketView,
 } from './types'
 
-export const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080').replace(/\/$/, '')
+/**
+ * The API is served from the same origin as the site, so every call is relative: `/prod` in the
+ * deployed build (the stage name API Gateway puts in front of every path), empty in development,
+ * where `next dev` proxies `/api/v1` to the deployed API (see `next.config.ts`).
+ */
+export const API_BASE = (process.env.NEXT_PUBLIC_API_URL ?? '').replace(/\/$/, '')
 const V1 = `${API_BASE}/api/v1`
 
 /** An RFC 7807 problem response, surfaced with the backend's stable `code` intact. */
@@ -50,7 +56,27 @@ interface RequestOptions {
   signal?: AbortSignal
 }
 
+/**
+ * How many times a request that lost a race is sent again. Every change to a queue is checked
+ * against the version it read; when two people change the same queue at once, one of them gets 409
+ * CONCURRENT_MODIFICATION after the server already retried several times. Nothing was written, so
+ * sending it again is safe, and it almost always goes through.
+ */
+const CONFLICT_RETRIES = 2
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await send<T>(path, options)
+    } catch (cause) {
+      const lostRace = cause instanceof ApiError && cause.status === 409 && cause.code === 'CONCURRENT_MODIFICATION'
+      if (!lostRace || attempt >= CONFLICT_RETRIES || options.signal?.aborted) throw cause
+      await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1) + Math.random() * 150))
+    }
+  }
+}
+
+async function send<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', body, auth = true, signal } = options
   const headers: Record<string, string> = { Accept: 'application/json' }
 
@@ -117,19 +143,9 @@ function toApiError(status: number, payload: unknown): ApiError {
 }
 
 export const api = {
+  // Signing in and signing up talk to Cognito directly (cognito.ts); the API only knows who you are.
   auth: {
-    register: (body: {
-      email: string
-      password: string
-      displayName: string
-      establishmentName: string
-      timezone?: string
-    }) => request<AuthResult>('/auth/register', { method: 'POST', body, auth: false }),
-
-    login: (body: { email: string; password: string }) =>
-      request<AuthResult>('/auth/login', { method: 'POST', body, auth: false }),
-
-    me: () => request<AuthResult['user']>('/auth/me'),
+    me: () => request<UserView>('/auth/me'),
   },
 
   establishments: {
@@ -196,10 +212,32 @@ export const api = {
     qrUrl: (queueId: string, size = 512) => `${V1}/public/queues/${queueId}/qr?size=${size}`,
   },
 
-  streams: {
-    /** EventSource cannot send headers, so the staff stream takes the token in the query string. */
-    queue: (queueId: string, token: string) =>
-      `${V1}/queues/${queueId}/stream?access_token=${encodeURIComponent(token)}`,
-    ticket: (ticketToken: string) => `${V1}/public/tickets/${ticketToken}/stream`,
+  /**
+   * The realtime WebSocket, when the deployment has one. Each resolves to the address to open, or
+   * `null` when there is no WebSocket to open, in which case the live views keep polling.
+   *
+   * The browser cannot send headers when opening a WebSocket, so the credential travels in the URL:
+   * a customer's ticket token (already public in their own page's address), or for staff a one-time
+   * ticket that expires in a minute - never the Cognito token itself.
+   */
+  realtime: {
+    queue: async (queueId: string): Promise<string | null> => {
+      const base = await websocketBase()
+      if (!base) return null
+      const { ticket } = await request<{ ticket: string }>(`/queues/${queueId}/ws-tickets`, { method: 'POST', body: {} })
+      return `${base}?wsTicket=${encodeURIComponent(ticket)}`
+    },
+    ticket: async (ticketToken: string): Promise<string | null> => {
+      const base = await websocketBase()
+      return base ? `${base}?ticket=${encodeURIComponent(ticketToken)}` : null
+    },
   },
+}
+
+async function websocketBase(): Promise<string | null> {
+  try {
+    return (await loadRuntimeConfig()).websocketUrl ?? null
+  } catch {
+    return null
+  }
 }

@@ -139,9 +139,10 @@ export default function JoinQueuePage() {
         // Remembered server-side, so the ticket email arrives in the language this page is in.
         locale,
       })
-      // A full navigation, not a client-side push: `/t/` is its own exported shell.
+      // A full navigation, not a client-side push: `/t/` is its own exported shell. Being built by
+      // hand, the URL has to carry the base path itself - Next only adds it to its own links.
       // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-      window.location.href = `/t/?token=${ticket.ticketToken}`
+      window.location.href = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ''}/t/?token=${ticket.ticketToken}`
     } catch (cause) {
       setFormError(errorMessage(t, cause))
       setSubmitting(false)

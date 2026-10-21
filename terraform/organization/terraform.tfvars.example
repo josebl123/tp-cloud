@@ -1,0 +1,23 @@
+# Copiar como terraform.tfvars para cambiar algún valor por defecto. Ninguno es obligatorio: con
+# los valores por defecto, el pipeline despliega en cualquier cuenta del Learner Lab (los tres
+# buckets de la app los crea antes scripts/buckets.sh, no Terraform).
+
+# region                      = "us-east-1"
+# project                     = "q"
+# api_stage_name              = "prod"
+# log_retention_days          = 14
+# access_logs_expiration_days = 30
+# site_throttle_rate_limit    = 500
+# site_throttle_burst_limit   = 1000
+# api_throttle_rate_limit     = 25
+# api_throttle_burst_limit    = 50
+# joins_per_minute            = 60
+
+# Mails. En el pipeline salen de variables del repositorio. En el Learner Lab, que niega SES, sirven
+# SMTP_SENDER_EMAIL (el SMTP de Gmail; su contraseña de aplicación va en el secret GMAIL_APP_PASSWORD,
+# nunca acá) y ALERT_EMAIL (es SNS). SES_SENDER_EMAIL y SES_VERIFIED_RECIPIENTS son para una cuenta
+# con SES: en el lab, el apply falla al crear las identidades.
+# smtp_sender_email       = "queue.cloud.itba@gmail.com"
+# alert_email           = "queue.cloud.itba@gmail.com"
+# ses_sender_email        = "queue.cloud.itba@gmail.com"
+# ses_verified_recipients = ["integrante@gmail.com"]

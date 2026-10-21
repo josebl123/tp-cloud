@@ -1,0 +1,489 @@
+# Despliegue de Queue con Terraform.
+#
+# Todo el ciclo corre desde el pull request, porque el PR de la entrega no se mergea antes de la
+# corrección y GitHub solo ofrece "Run workflow" (workflow_dispatch) para workflows que ya están en
+# la rama por defecto:
+#
+#   cada push al PR          validate y build; plan, con las credenciales del lab
+#   aprobar el environment   apply sobre ese mismo plan, y prueba de humo
+#   etiqueta "destroy"       destroy (también aprobado)
+#
+# Un pull request que viene de un fork no recibe los secrets del repositorio: ahí corren Validar y
+# Compilar, y Plan, Apply y Destroy quedan salteados en lugar de fallar por falta de credenciales.
+#
+# Las credenciales del Learner Lab vencen con cada sesión: antes de correr, hay que actualizar los
+# secrets AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY y AWS_SESSION_TOKEN.
+
+name: Terraform
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Qué hacer
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: 1.16.4
+  TFLINT_VERSION: v0.64.0
+  NODE_VERSION: 22
+  # La región, en un solo lugar: configura las credenciales y llega a Terraform como var.region.
+  AWS_REGION: us-east-1
+  # La estructura de la plantilla de la cátedra: la raíz en terraform/organization y los módulos en
+  # terraform/modules. Formato y tflint corren sobre las dos; init, plan y apply, sobre la raíz.
+  TF_BASE: terraform
+  TF_DIR: terraform/organization
+  # El stage de la API, en un solo lugar: el frontend se compila con esta ruta base, y el plan y el
+  # destroy se lo pasan a Terraform como var.api_stage_name.
+  API_STAGE: prod
+# Con `shell: bash` explícito, GitHub agrega pipefail: un `terraform plan | tee` que falla, falla.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Validar
+    if: github.event.action != 'labeled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Formato
+        run: terraform fmt -check -recursive -diff
+        working-directory: ${{ env.TF_BASE }}
+
+      - name: Validación
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      # Los tests de Terraform, en modo plan y con los providers simulados: no usan AWS ni el build.
+      # El de la raíz comprueba que el plan entero se puede armar; los de cada módulo, sus promesas.
+      - name: Tests de Terraform
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform test
+          for module in ../modules/*/; do
+            echo "::group::$module"
+            (cd "$module" && terraform init -backend=false -input=false >/dev/null && terraform test)
+            echo "::endgroup::"
+          done
+
+      - uses: terraform-linters/setup-tflint@v6.3.1
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: tflint
+        working-directory: ${{ env.TF_BASE }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          tflint --init
+          tflint --recursive --format compact
+
+  build:
+    name: Compilar
+    # Destroy no lo necesita (ver el job destroy): así un error de compilación no impide limpiar.
+    if: github.event.action != 'labeled' && inputs.action != 'destroy'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            functions/package-lock.json
+            frontend/package-lock.json
+
+      - name: Funciones
+        working-directory: functions
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      # Los unitarios del dominio y los de integración contra DynamoDB Local (Testcontainers usa el
+      # Docker que ya trae el runner). Incluyen las carreras del control optimista: si alguna se
+      # rompe, no se despliega.
+      - name: Tests de las funciones
+        working-directory: functions
+        run: npm test
+
+      - name: Sitio
+        working-directory: frontend
+        env:
+          # La API REST antepone el stage a cada ruta, y el sitio y la API comparten la URL.
+          NEXT_PUBLIC_BASE_PATH: /${{ env.API_STAGE }}
+          NEXT_PUBLIC_API_URL: /${{ env.API_STAGE }}
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: build
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            functions/dist
+            frontend/out
+
+  plan:
+    name: Plan
+    needs: [validate, build]
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action != 'labeled' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && inputs.action != 'destroy')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: build
+
+      # Sin las credenciales del lab, configure-aws-credentials falla con un mensaje poco claro.
+      - name: Credenciales del lab
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+        run: |
+          missing=()
+          for name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Faltan los secrets ${missing[*]}: copiarlos de AWS Details en el Learner Lab (ver el paso 2 de la guía del README)."
+            exit 1
+          fi
+
+      - uses: ./.github/actions/terraform-init
+        with:
+          terraform-version: ${{ env.TF_VERSION }}
+          working-directory: ${{ env.TF_DIR }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+
+      # Los mails son variables del repositorio (Settings → Secrets and variables → Actions →
+      # Variables), no secrets: no son secretos y así se ven. Una que no existe llega vacía, y "" no
+      # es null para Terraform: solo se pasan las que tienen valor.
+      - name: Plan
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          SES_SENDER_EMAIL: ${{ vars.SES_SENDER_EMAIL }}
+          SES_VERIFIED_RECIPIENTS: ${{ vars.SES_VERIFIED_RECIPIENTS }}
+          ALERT_EMAIL: ${{ vars.ALERT_EMAIL }}
+          SMTP_SENDER_EMAIL: ${{ vars.SMTP_SENDER_EMAIL }}
+          TF_VAR_api_stage_name: ${{ env.API_STAGE }}
+          TF_VAR_region: ${{ env.AWS_REGION }}
+        run: |
+          if [ -n "$SES_SENDER_EMAIL" ]; then export TF_VAR_ses_sender_email="$SES_SENDER_EMAIL"; fi
+          if [ -n "$SMTP_SENDER_EMAIL" ]; then export TF_VAR_smtp_sender_email="$SMTP_SENDER_EMAIL"; fi
+          if [ -n "$ALERT_EMAIL" ]; then export TF_VAR_alert_email="$ALERT_EMAIL"; fi
+          # Separadas por coma, como las escribe una persona: Terraform recibe la lista en JSON.
+          if [ -n "$SES_VERIFIED_RECIPIENTS" ]; then
+            TF_VAR_ses_verified_recipients=$(jq -cn --arg list "$SES_VERIFIED_RECIPIENTS" \
+              '$list | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))')
+            export TF_VAR_ses_verified_recipients
+          fi
+          terraform plan -input=false -no-color -lock-timeout=10m -out=tfplan | tee plan.txt
+          {
+            echo '## Plan de Terraform'
+            echo '```'
+            grep -E '^(Plan:|No changes|Changes to Outputs)' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # El apply corre en otro runner y usa este mismo plan. Los zips de las funciones van con él:
+      # el plan los referencia y en el otro runner no existirían.
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: tfplan
+          retention-days: 1
+          include-hidden-files: true
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/plan.txt
+            ${{ env.TF_DIR }}/.build
+
+      - name: Comentar el plan en el PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v9.0.0
+        env:
+          PLAN_FILE: ${{ env.TF_DIR }}/plan.txt
+        with:
+          script: |
+            const fs = require('fs')
+            const marker = '<!-- terraform-plan -->'
+            const plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8')
+            const limit = 60000
+            const shown = plan.length > limit ? plan.slice(-limit) : plan
+            const body = [
+              marker,
+              '### Plan de Terraform',
+              `Commit \`${context.payload.pull_request.head.sha.slice(0, 7)}\`. Para aplicarlo, aprobar el environment \`aws-lab\` en la ejecución.`,
+              '<details><summary>Ver el plan</summary>',
+              '',
+              '```',
+              shown,
+              '```',
+              '</details>',
+            ].join('\n')
+            const { owner, repo } = context.repo
+            const issue_number = context.issue.number
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
+            const previous = comments.find((comment) => comment.body?.startsWith(marker))
+            if (previous) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body })
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body })
+            }
+
+  apply:
+    name: Apply
+    # Un solo estado: un apply o un destroy espera al otro. Va en el job y no en el workflow porque un
+    # apply que espera aprobación retiene el grupo, y no debe frenar el validate ni el plan del push
+    # siguiente. Si llega otro apply mientras uno espera, GitHub cancela el viejo: su plan ya no sirve.
+    concurrency:
+      group: terraform-state
+      cancel-in-progress: false
+    needs: plan
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action != 'labeled' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && inputs.action == 'apply')
+    runs-on: ubuntu-latest
+    # Con revisores obligatorios configurados en el repositorio, el apply espera una aprobación.
+    environment: aws-lab
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: build
+
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          name: tfplan
+          path: ${{ env.TF_DIR }}
+
+      - id: init
+        uses: ./.github/actions/terraform-init
+        with:
+          terraform-version: ${{ env.TF_VERSION }}
+          working-directory: ${{ env.TF_DIR }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+
+      # La prueba del tiempo real usa el WebSocket que Node trae desde la versión 22.
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Terraform no puede crear los buckets: el SCP del Learner Lab niega la lectura de object lock
+      # que el provider hace después de crear cualquier `aws_s3_bucket` (scripts/buckets.sh explica
+      # el detalle). Se crean acá, con los nombres que decidió Terraform en el plan guardado, y el
+      # módulo private-bucket configura todo lo demás. El bucket de logs va último en la lista porque
+      # es el orden en que se borran: recibe los registros de los otros dos.
+      - name: Buckets
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          STATE_BUCKET: ${{ steps.init.outputs.state-bucket }}
+        run: |
+          mapfile -t names < <(terraform show -json tfplan \
+            | jq -r '.planned_values.outputs.bucket_names.value | to_entries | sort_by(.key == "logs") | .[].value')
+          bash scripts/buckets.sh create "$STATE_BUCKET" "${names[@]}"
+
+      - name: Apply
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -input=false -no-color -lock-timeout=10m tfplan
+
+      # La contraseña de aplicación de Gmail va directo a Secrets Manager con la CLI: si pasara por
+      # Terraform quedaría en texto plano dentro del plan guardado, que es un artefacto descargable
+      # del workflow, y en el estado. GitHub la enmascara en los logs.
+      - name: Contraseña SMTP
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          secret_id=$(terraform output -raw smtp_secret_id 2>/dev/null || true)
+          if [ -z "$secret_id" ] || [ "$secret_id" = "null" ]; then
+            echo "Sin SMTP_SENDER_EMAIL: los avisos se simulan"
+          elif [ -z "$GMAIL_APP_PASSWORD" ]; then
+            echo "::warning::Hay SMTP_SENDER_EMAIL pero no el secret GMAIL_APP_PASSWORD: los avisos se simulan"
+          else
+            aws secretsmanager put-secret-value --secret-id "$secret_id" \
+              --secret-string "$GMAIL_APP_PASSWORD" --output text --query VersionId >/dev/null
+            echo "Contraseña SMTP cargada en Secrets Manager"
+          fi
+
+      - name: Prueba de humo
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          set -euo pipefail
+          site=$(terraform output -raw site_url)
+          health=$(terraform output -raw health_url)
+          api="${site}api/v1"
+
+          # Un deployment nuevo de API Gateway tarda unos segundos en propagarse.
+          for attempt in $(seq 1 10); do
+            if curl -fsS "$health"; then break; fi
+            if [ "$attempt" -eq 10 ]; then echo "La API no respondió"; exit 1; fi
+            sleep 6
+          done
+          echo
+
+          if ! { curl -fsS -o index.html "$site" && grep -qi '<html' index.html; }; then
+            echo "La portada no devolvió HTML"; exit 1
+          fi
+          curl -fsS -o /dev/null "${site}login/" || { echo "La página de login no cargó"; exit 1; }
+          # Una ruta que no existe: la página 404 del sitio, no el XML de S3.
+          status=$(curl -sS -o not-found.html -w '%{http_code}' -H 'Accept: text/html' "${site}no-existe/")
+          if ! { [ "$status" = 404 ] && grep -qi '<html' not-found.html; }; then
+            echo "Una ruta inexistente respondió $status sin la página 404"; cat not-found.html; exit 1
+          fi
+          curl -fsS "${site}config.json" | jq -e '.userPoolId and .userPoolClientId' >/dev/null \
+            || { echo "config.json no tiene los ids de Cognito"; exit 1; }
+
+          # Un mapping del stream recién creado tarda minutos en empezar a leer. Lee desde TRIM_HORIZON,
+          # así que no pierde nada, pero el push de abajo llegaría tarde. Se espera a que procese su
+          # primer lote (la carga de demo escribe eventos en el apply); si ya venía leyendo, pasa
+          # enseguida. Pasados 5 minutos se sigue igual y decide la prueba del WebSocket.
+          mapping=$(terraform output -raw stream_mapping_uuid)
+          for attempt in $(seq 1 30); do
+            result=$(aws lambda get-event-source-mapping --uuid "$mapping" --query LastProcessingResult --output text)
+            if [ "$result" != "No records processed" ]; then echo "Stream: $result"; break; fi
+            if [ "$attempt" -eq 30 ]; then echo "::warning::El stream todavía no procesó nada después de 5 minutos"; fi
+            sleep 10
+          done
+
+          # El recorrido de un cliente en la cola de demo: unirse, ver su ticket e irse.
+          demo=$(terraform output -raw demo_queue_url 2>/dev/null || true)
+          if [ -n "$demo" ]; then
+            queue_id="${demo##*id=}"
+            # Con el SMTP de Gmail los avisos salen de verdad: la prueba se anota con el propio
+            # remitente, así el mail llega al buzón del grupo en lugar de rebotar.
+            email=$(terraform output -raw smtp_sender_email 2>/dev/null || true)
+            if [ -z "$email" ] || [ "$email" = "null" ]; then email=humo@queue.example; fi
+            body=$(jq -cn --arg email "$email" '{name: "Prueba de humo", email: $email, partySize: 2, locale: "es"}')
+            status=$(curl -sS -o join.json -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+              -d "$body" \
+              "${api}/public/queues/${queue_id}/entries")
+            [ "$status" = "201" ] || { echo "Unirse a la cola de demo respondió $status"; cat join.json; exit 1; }
+            token=$(jq -r .ticketToken join.json)
+            curl -fsS "${api}/public/tickets/${token}" | jq -e '.status == "WAITING"' >/dev/null \
+              || { echo "El ticket no quedó esperando"; exit 1; }
+            # Irse de la cola con el WebSocket abierto: el aviso tiene que llegar por el push.
+            node ../../.github/scripts/smoke-realtime.mjs "$(terraform output -raw websocket_url)" "$token" "$api"
+          fi
+
+          {
+            echo '## Desplegado'
+            echo "- Sitio: $site"
+            echo "- Salud: $health"
+            if [ -n "$demo" ]; then
+              echo "- Cola de demo: $demo"
+              echo "- Staff de demo: $(terraform output -raw demo_staff_email) (contraseña: \`terraform output -raw demo_staff_password\`)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  destroy:
+    name: Destroy
+    # Un solo estado: un apply o un destroy espera al otro. Va en el job y no en el workflow porque un
+    # apply que espera aprobación retiene el grupo, y no debe frenar el validate ni el plan del push
+    # siguiente. Si llega otro apply mientras uno espera, GitHub cancela el viejo: su plan ya no sirve.
+    concurrency:
+      group: terraform-state
+      cancel-in-progress: false
+    # Sin `needs: build`: limpiar la cuenta del lab no puede depender de que el código compile. Si no,
+    # un error de TypeScript dejaría todo desplegado, gastando, hasta arreglarlo.
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'destroy' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && inputs.action == 'destroy')
+    runs-on: ubuntu-latest
+    environment: aws-lab
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # Destroy también evalúa la configuración, y `archive_file` exige que existan los bundles. Para
+      # borrar no hace falta el código real: alcanza con un archivo por función. Sin el build del
+      # sitio, `fileset` queda vacío y la página 404 cae en su versión mínima.
+      - name: Bundles vacíos para evaluar la configuración
+        run: |
+          for handler in functions/src/handlers/*.ts; do
+            name=$(basename "$handler" .ts)
+            mkdir -p "functions/dist/$name"
+            echo 'export const handler = async () => ({})' > "functions/dist/$name/index.mjs"
+          done
+
+      - id: init
+        uses: ./.github/actions/terraform-init
+        with:
+          terraform-version: ${{ env.TF_VERSION }}
+          working-directory: ${{ env.TF_DIR }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          # Destruir nunca crea el backend: si no hay estado, no hay nada que destruir o se perdió.
+          create-state-bucket: "false"
+
+      # Sin refresh: refrescar un bucket creado con `aws_s3_bucket` (como el que dejó la primera
+      # corrida) repite la lectura de object lock que el SCP del lab niega, y el destroy fallaría
+      # antes de borrar nada. Destruir lo que dice el estado alcanza.
+      - name: Destroy
+        if: steps.init.outputs.state-found == 'true'
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          TF_VAR_api_stage_name: ${{ env.API_STAGE }}
+          TF_VAR_region: ${{ env.AWS_REGION }}
+        run: terraform destroy -input=false -no-color -lock-timeout=10m -auto-approve -refresh=false
+
+      # Los buckets los creó el pipeline, así que los borra el pipeline, en el orden anotado.
+      - name: Borrar los buckets
+        if: steps.init.outputs.state-found == 'true'
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          STATE_BUCKET: ${{ steps.init.outputs.state-bucket }}
+        run: bash scripts/buckets.sh delete "$STATE_BUCKET"
+
+      # Con todo destruido, el estado está vacío y el bucket que lo guarda no le sirve a nadie: se
+      # borra también, así la cuenta queda sin nada de Queue. El próximo apply lo crea de nuevo. Solo
+      # si el estado de verdad no tiene recursos: si quedara alguno, se conserva para no perderle el
+      # rastro.
+      - name: Borrar el bucket del estado
+        if: steps.init.outputs.state-found == 'true'
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          STATE_BUCKET: ${{ steps.init.outputs.state-bucket }}
+        run: |
+          remaining=$(terraform state list | wc -l)
+          if [ "$remaining" -ne 0 ]; then
+            echo "::warning::El estado todavía tiene $remaining recursos: se conserva s3://$STATE_BUCKET"
+            terraform state list
+            exit 0
+          fi
+          bash scripts/buckets.sh delete-state "$STATE_BUCKET"

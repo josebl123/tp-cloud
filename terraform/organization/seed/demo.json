@@ -1,0 +1,33 @@
+{
+  "establishment": {
+    "id": "demo-la-parrilla",
+    "name": "La Parrilla (demo)",
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "queues": [
+    {
+      "id": "demo-mesas",
+      "defaultLaneId": "demo-mesas-chicas",
+      "settings": {
+        "name": "Mesas",
+        "description": "Mesas del salón. Los grupos de 3 o más tienen su propio carril.",
+        "serviceStations": 3,
+        "defaultServiceMinutes": 25,
+        "callStrategy": "LANE_PRIORITY",
+        "notifyAtPosition": 3
+      },
+      "lanes": [
+        { "id": "demo-mesas-chicas", "name": "1 a 2", "minPartySize": 1, "maxPartySize": 2, "priority": 0 },
+        { "id": "demo-mesas-grandes", "name": "3 o más", "minPartySize": 3, "maxPartySize": null, "priority": 1 }
+      ]
+    },
+    {
+      "id": "demo-barra",
+      "defaultLaneId": "demo-barra-unico",
+      "settings": {
+        "name": "Barra",
+        "defaultServiceMinutes": 10
+      }
+    }
+  ]
+}

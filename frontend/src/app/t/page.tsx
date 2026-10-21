@@ -8,7 +8,7 @@ import { useLiveResource } from '@/lib/useLiveResource'
 import { useQueryParam } from '@/lib/useQueryParam'
 import type { NotificationView, TicketView } from '@/lib/types'
 import { Alert } from '@/components/ui/Alert'
-import { Button, ButtonAnchor } from '@/components/ui/Button'
+import { Button, ButtonLink } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LiveDot } from '@/components/LiveDot'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
@@ -39,8 +39,10 @@ export default function TicketPage() {
     [token],
   )
 
+  const socket = useCallback(() => (token ? api.realtime.ticket(token) : Promise.resolve(null)), [token])
+
   const { data: ticket, error, live, loading, refresh } = useLiveResource<TicketView>({
-    url: token ? api.streams.ticket(token) : null,
+    socket,
     eventName: 'ticket.updated',
     load,
     enabled: Boolean(token),
@@ -146,9 +148,9 @@ export default function TicketPage() {
         </div>
       ) : ticket.status === 'LEFT' || ticket.status === 'NO_SHOW' ? (
         <div className="mt-6">
-          <ButtonAnchor href={`/q/?id=${ticket.queue.id}`} block>
+          <ButtonLink href={`/q/?id=${ticket.queue.id}`} block>
             {t('ticket.rejoin')}
-          </ButtonAnchor>
+          </ButtonLink>
         </div>
       ) : null}
 

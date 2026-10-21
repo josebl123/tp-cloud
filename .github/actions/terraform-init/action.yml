@@ -1,0 +1,125 @@
+name: Terraform init con estado remoto
+description: >
+  Instala Terraform, carga las credenciales del Learner Lab, crea el bucket del estado si todavía no
+  existe en esta cuenta, e inicializa el backend. Lo comparten plan, apply y destroy; el destroy lo usa
+  sin crear nada, y antes comprueba que el estado exista.
+
+inputs:
+  terraform-version:
+    description: Versión exacta de Terraform.
+    required: true
+  working-directory:
+    description: Carpeta raíz de Terraform.
+    required: true
+  aws-region:
+    description: Región del lab.
+    required: true
+  aws-access-key-id:
+    description: Credencial del lab (cambia en cada sesión).
+    required: true
+  aws-secret-access-key:
+    description: Credencial del lab (cambia en cada sesión).
+    required: true
+  aws-session-token:
+    description: Credencial del lab (cambia en cada sesión).
+    required: true
+  create-state-bucket:
+    description: >
+      "true" para plan y apply: crea el bucket del estado si falta. "false" para destroy: no crea nada,
+      y si no hay estado informa si es porque nunca hubo un despliegue o porque se perdió.
+    required: false
+    default: "true"
+
+outputs:
+  state-bucket:
+    description: Bucket donde vive el estado de esta cuenta.
+    value: ${{ steps.state.outputs.bucket }}
+  state-found:
+    description: '"true" si hay un estado para trabajar; "false" si en esta cuenta no hay nada desplegado.'
+    value: ${{ steps.state.outputs.found }}
+
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/setup-terraform@v4.0.1
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        # Sin el wrapper, `terraform output -raw` devuelve solo el valor.
+        terraform_wrapper: false
+
+    - uses: aws-actions/configure-aws-credentials@v6.3.0
+      with:
+        aws-region: ${{ inputs.aws-region }}
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-session-token: ${{ inputs.aws-session-token }}
+
+    # El backend necesita un bucket que exista antes del init. Su nombre depende de la cuenta, así
+    # que cada cuenta del lab (también la de la cátedra) tiene el suyo, y se crea la primera vez.
+    # Solo un 404 cuenta como "no existe": un error de permisos o de red corta acá, en lugar de crear
+    # un bucket o de concluir que no hay nada desplegado.
+    - id: state
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        CREATE: ${{ inputs.create-state-bucket }}
+        # Las claves que usan backend.tf y scripts/buckets.sh.
+        STATE_KEY: queue/terraform.tfstate
+        RECORD_KEY: queue/buckets.txt
+      run: |
+        set -euo pipefail
+        account=$(aws sts get-caller-identity --query Account --output text)
+        bucket="tfstate-q-${account}-${AWS_REGION}"
+        echo "bucket=$bucket" >> "$GITHUB_OUTPUT"
+
+        # 0 si existe, 1 si da 404; cualquier otro error termina el paso.
+        exists() {
+          local out
+          if out=$("$@" --expected-bucket-owner "$account" 2>&1); then return 0; fi
+          if grep -qE '\(404\)|Not Found|NoSuchKey' <<<"$out"; then return 1; fi
+          echo "::error::No se pudo comprobar $*: $out"
+          exit 1
+        }
+
+        if exists aws s3api head-bucket --bucket "$bucket"; then
+          echo "Estado en s3://$bucket"
+        elif [ "$CREATE" = "true" ]; then
+          echo "Creando s3://$bucket para el estado"
+          if [ "$AWS_REGION" = "us-east-1" ]; then
+            aws s3api create-bucket --bucket "$bucket"
+          else
+            aws s3api create-bucket --bucket "$bucket" \
+              --create-bucket-configuration LocationConstraint="$AWS_REGION"
+          fi
+          aws s3api wait bucket-exists --bucket "$bucket"
+          aws s3api put-public-access-block --bucket "$bucket" --public-access-block-configuration \
+            BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          # Versionado: si un apply corrompe el estado, se puede volver a la versión anterior.
+          aws s3api put-bucket-versioning --bucket "$bucket" --versioning-configuration Status=Enabled
+        else
+          echo "::notice::No existe s3://$bucket: en esta cuenta no hay nada desplegado por este pipeline."
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Para destruir hace falta el estado. Sin estado y sin buckets anotados, nunca hubo un apply
+        # (un plan alcanza para crear el bucket). Con buckets anotados y sin estado, el estado se perdió:
+        # no se puede saber qué hay desplegado, y declarar "0 destruidos" escondería el problema.
+        if [ "$CREATE" != "true" ] && ! exists aws s3api head-object --bucket "$bucket" --key "$STATE_KEY"; then
+          if exists aws s3api head-object --bucket "$bucket" --key "$RECORD_KEY"; then
+            echo "::error::Hay buckets anotados en s3://$bucket/$RECORD_KEY pero no el estado ($STATE_KEY): no se puede saber qué hay desplegado. Revisar las versiones del bucket del estado antes de seguir."
+            exit 1
+          fi
+          echo "::notice::s3://$bucket no tiene estado ni buckets anotados: nunca se aplicó nada en esta cuenta."
+          echo "found=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "found=true" >> "$GITHUB_OUTPUT"
+
+    - if: steps.state.outputs.found == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: >
+        terraform init -input=false
+        -backend-config="bucket=${{ steps.state.outputs.bucket }}"
+        -backend-config="region=${{ inputs.aws-region }}"

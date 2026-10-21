@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ApiError, api } from './api'
+import { signIn, signUp } from './cognito'
 import { getToken, setToken, subscribeToToken } from './session'
 import type { EstablishmentView, UserView } from './types'
 
@@ -109,18 +110,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  const applySession = useCallback(
-    async (result: Awaited<ReturnType<typeof api.auth.login>>) => {
-      setToken(result.accessToken)
-      setUser(result.user)
-      if (result.establishment) {
-        setActiveId(result.establishment.id)
+  /**
+   * Starts a session from a Cognito token: who you are comes from the API (`/auth/me`), and so do
+   * the establishments you belong to. `establishmentId` preselects one, as after signing up.
+   */
+  const startSession = useCallback(
+    async (token: string, establishmentId?: string) => {
+      setToken(token)
+      if (establishmentId) {
+        setActiveId(establishmentId)
         try {
-          window.localStorage.setItem(ACTIVE_ESTABLISHMENT_KEY, result.establishment.id)
+          window.localStorage.setItem(ACTIVE_ESTABLISHMENT_KEY, establishmentId)
         } catch {
           /* storage unavailable; the in-memory selection still works for this tab */
         }
       }
+      setUser(await api.auth.me())
       await loadEstablishments()
     },
     [loadEstablishments],
@@ -128,16 +133,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(
     async (email: string, password: string) => {
-      await applySession(await api.auth.login({ email, password }))
+      await startSession(await signIn(email, password))
     },
-    [applySession],
+    [startSession],
   )
 
+  /**
+   * Signing up is three steps now that accounts live in Cognito: create the account (confirmed on
+   * the spot by the pre sign-up trigger), sign in, and create the business as its owner. The page
+   * still asks for everything at once, as before.
+   */
   const register = useCallback(
     async (input: { email: string; password: string; displayName: string; establishmentName: string }) => {
-      await applySession(await api.auth.register(input))
+      await signUp({ email: input.email, password: input.password, displayName: input.displayName })
+      const token = await signIn(input.email, input.password)
+      // The token has to be in place before creating the business: that call is authenticated.
+      setToken(token)
+      const establishment = await api.establishments.create({
+        name: input.establishmentName,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      })
+      await startSession(token, establishment.id)
     },
-    [applySession],
+    [startSession],
   )
 
   const logout = useCallback(() => {

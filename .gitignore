@@ -1,10 +1,3 @@
-# Java / Maven
-target/
-*.class
-*.jar
-!.mvn/wrapper/maven-wrapper.jar
-.mvn/timing.properties
-
 # IDE
 .idea/
 *.iml
@@ -17,14 +10,11 @@ target/
 # OS
 .DS_Store
 
-# Node / Next (frontend, later)
+# Node / Next
 node_modules/
 .next/
 out/
 .env*.local
-
-# Local config
-backend/src/main/resources/application-local.yml
 
 # Local tooling
 .claude/
@@ -33,7 +23,25 @@ backend/src/main/resources/application-local.yml
 .env
 .env.local
 !.env.example
+# La configuración del despliegue manual del TP2: contraseña de RDS y app password de Gmail en
+# texto plano. El repositorio es público.
+app.env
+
+# El build del frontend zipeado para subirlo a mano en el TP2
+frontend/web.zip
 
 # Generados por las herramientas de agentes al correr next dev
 AGENTS.md
 CLAUDE.md
+
+# Terraform: el lock file (.terraform.lock.hcl) sí se commitea, para fijar los providers
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+plan.txt
+terraform.tfvars
+terraform/organization/.build/
+
+# Funciones: los bundles se generan en el pipeline
+functions/dist/

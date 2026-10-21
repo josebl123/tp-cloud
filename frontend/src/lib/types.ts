@@ -1,5 +1,5 @@
 /**
- * Mirrors the read models the Spring API returns.
+ * Mirrors the read models the API returns.
  *
  * The backend serialises with non-null inclusion, so any field the server may omit is optional here.
  * That is not defensive typing for its own sake: `position` really is absent once a customer has been
@@ -31,6 +31,8 @@ export type EventType =
   | 'QUEUE_STATUS_CHANGED'
   | 'QUEUE_DELETED'
   | 'QUEUE_ARCHIVED'
+  | 'QUEUE_CLOSED'
+  | 'LANE_CHANGED'
   | 'ENTRY_JOINED'
   | 'ENTRY_CALLED'
   | 'ENTRY_SERVING_STARTED'
@@ -67,15 +69,6 @@ export interface EstablishmentView {
   timezone: string
   role?: MembershipRole
   createdAt: string
-}
-
-export interface AuthResult {
-  accessToken: string
-  tokenType: string
-  expiresInSeconds: number
-  expiresAt: string
-  user: UserView
-  establishment?: EstablishmentView
 }
 
 export interface MemberView {

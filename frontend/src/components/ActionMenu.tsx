@@ -61,7 +61,8 @@ export function ActionMenu({
     const onPointerDown = (event: PointerEvent) => {
       if (!root.current?.contains(event.target as Node)) close(false)
     }
-    // Capture, so the menu closes before focus lands anywhere outside it.
+    // `focusin` bubbles, unlike `focus`, so listening on the document is enough to notice focus
+    // leaving the menu by any route - Tab, a click elsewhere, or a programmatic move.
     const onFocusIn = (event: FocusEvent) => {
       if (!root.current?.contains(event.target as Node)) close(false)
     }

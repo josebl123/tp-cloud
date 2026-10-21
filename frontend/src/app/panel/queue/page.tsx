@@ -17,7 +17,6 @@ import {
   errorMessage,
 } from '@/lib/format'
 import { useI18n } from '@/lib/i18n'
-import { getToken } from '@/lib/session'
 import { useLiveResource } from '@/lib/useLiveResource'
 import { useQueryParam } from '@/lib/useQueryParam'
 import type { EntryStatus, EntryView, QueueEventView, QueueSnapshot, QueueStatus } from '@/lib/types'
@@ -41,7 +40,6 @@ import { Stat } from '@/components/Stat'
 export default function QueueBoardPage() {
   const { t, tp } = useI18n()
   const queueId = useQueryParam('id')
-  const [token, setTokenState] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [busyEntry, setBusyEntry] = useState<string | null>(null)
   const [calling, setCalling] = useState(false)
@@ -59,15 +57,15 @@ export default function QueueBoardPage() {
   const [eventsFailed, setEventsFailed] = useState(false)
   const disclosureId = useId()
 
-  useEffect(() => setTokenState(getToken()), [])
-
   const load = useCallback(
     (signal: AbortSignal) => api.queues.board(queueId as string, signal),
     [queueId],
   )
 
+  const socket = useCallback(() => (queueId ? api.realtime.queue(queueId) : Promise.resolve(null)), [queueId])
+
   const { data: board, error, live, loading, refresh } = useLiveResource<QueueSnapshot>({
-    url: queueId && token ? api.streams.queue(queueId, token) : null,
+    socket,
     eventName: 'queue.updated',
     load,
     enabled: Boolean(queueId),
@@ -287,7 +285,7 @@ export default function QueueBoardPage() {
                   />
                 ))}
                 {lane.waiting.length > 0 ? (
-                  <ol className="space-y-2">
+                  <ol className="@container space-y-2">
                     {lane.waiting.map((entry) => (
                       <WaitingRow
                         key={entry.id}
@@ -337,7 +335,7 @@ export default function QueueBoardPage() {
           {board.waiting.length === 0 ? (
             <EmptyState title={t('board.lineEmptyTitle')} description={t('board.lineEmptyBody')} />
           ) : (
-            <ol className="space-y-2">
+            <ol className="@container space-y-2">
               {board.waiting.map((entry) => (
                 <WaitingRow
                   key={entry.id}
@@ -604,7 +602,7 @@ function WaitingRow({
         </p>
       </div>
 
-      <span className="hidden shrink-0 text-sm text-muted tnum sm:block">
+      <span className="hidden shrink-0 text-sm text-muted tnum @lg:block">
         {formatWaitNeutral(t, entry.estimatedWaitMinutes)}
       </span>
 

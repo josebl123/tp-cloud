@@ -4,13 +4,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError } from './api'
 
 interface Options<T> {
-  /** SSE endpoint, or null to skip the stream and rely on polling alone. */
-  url: string | null
-  /** Named SSE event carrying the payload. */
+  /**
+   * Resolves the WebSocket address to open. `null` means there is no WebSocket here (keep polling);
+   * a rejection means try again later (the staff ticket request failed, say). Must be a stable
+   * function: a new one reopens the connection.
+   */
+  socket?: (() => Promise<string | null>) | undefined
+  /** The `type` of the pushed message that carries the payload. */
   eventName: string
   /** Fetches the resource. Used for the first load and as the polling fallback. */
   load: (signal: AbortSignal) => Promise<T>
-  /** How often to re-fetch while the stream is down. */
+  /** How often to re-fetch while the socket is down. */
   pollMs?: number
   enabled?: boolean
 }
@@ -18,7 +22,7 @@ interface Options<T> {
 interface LiveResource<T> {
   data: T | null
   error: ApiError | null
-  /** True while the SSE connection is open, so the UI can be honest about how fresh it is. */
+  /** True while the WebSocket is open, so the UI can be honest about how fresh it is. */
   live: boolean
   loading: boolean
   refresh: () => void
@@ -27,15 +31,22 @@ interface LiveResource<T> {
 /**
  * Keeps one resource in sync with the server.
  *
- * The first read is a plain fetch rather than the stream, because `EventSource` cannot report a
+ * The first read is a plain fetch rather than the socket, because a WebSocket cannot report a
  * status code - a missing ticket has to surface as "this ticket does not exist", not as a silent
- * connection failure. Once that succeeds the stream takes over and pushes every change.
+ * connection failure. Once that succeeds the socket takes over and pushes every change.
  *
- * Polling is the safety net, not the mechanism: it only runs while the stream is down, so a proxy
- * that blocks `text/event-stream` degrades to a slightly slower app instead of a broken one.
+ * Polling is the safety net, not the mechanism: it only runs while the socket is down, so a network
+ * that blocks WebSockets degrades to a slightly slower app instead of a broken one.
  */
+/**
+ * API Gateway drops a WebSocket after ten idle minutes. A ping every five keeps it open; it is
+ * answered by API Gateway itself, so it does not invoke any Lambda.
+ */
+const PING_MS = 5 * 60 * 1000
+const RECONNECT_MAX_MS = 30_000
+
 export function useLiveResource<T>({
-  url,
+  socket,
   eventName,
   load,
   pollMs = 5000,
@@ -51,8 +62,8 @@ export function useLiveResource<T>({
   loadRef.current = load
 
   /*
-   * Three things write `data`: the first load, an explicit refresh, and the stream. They race.
-   * A poll issued while the stream was down could resolve seconds later - after the stream had
+   * Three things write `data`: the first load, an explicit refresh, and the socket. They race.
+   * A poll issued while the socket was down could resolve seconds later - after the socket had
    * reconnected and pushed a newer snapshot - and roll the board back to the older state, which on
    * a queue looks exactly like a customer reappearing after being served. Each read takes a ticket
    * before it starts; a result whose ticket is older than what has already been applied is dropped.
@@ -100,38 +111,79 @@ export function useLiveResource<T>({
     }
   }, [enabled, nonce, apply])
 
-  // The stream.
+  // The WebSocket, where the deployment has one. It closes on its own after two hours (API
+  // Gateway's limit) or when the network changes: either way it reconnects, with backoff, and on
+  // every reconnection reloads over REST whatever was missed while it was down.
   useEffect(() => {
-    if (!enabled || !url) return
+    if (!enabled || !socket) return
 
-    const source = new EventSource(url)
+    let stopped = false
+    let opened = false
+    let attempt = 0
+    let connection: WebSocket | null = null
+    let reconnectTimer: number | undefined
+    let pingTimer: number | undefined
 
-    const onPayload = (event: MessageEvent<string>) => {
+    const reconnectLater = () => {
+      if (stopped) return
+      const delay = Math.min(RECONNECT_MAX_MS, 1000 * 2 ** attempt++)
+      reconnectTimer = window.setTimeout(() => void open(), delay)
+    }
+
+    const open = async () => {
+      let address: string | null
       try {
-        // A pushed frame is by definition the freshest thing we have, so it takes a ticket at the
-        // moment it arrives rather than when the connection opened.
-        apply(JSON.parse(event.data) as T, nextIssue.current++)
+        address = await socket()
       } catch {
-        // A malformed frame is not worth tearing the connection down for.
+        reconnectLater()
+        return
+      }
+      if (stopped || !address) return
+
+      connection = new WebSocket(address)
+      connection.onopen = () => {
+        attempt = 0
+        setLive(true)
+        if (opened) refresh()
+        opened = true
+        pingTimer = window.setInterval(() => {
+          if (connection?.readyState === WebSocket.OPEN) connection.send(JSON.stringify({ action: 'ping' }))
+        }, PING_MS)
+      }
+      connection.onmessage = (event: MessageEvent<string>) => {
+        try {
+          const message = JSON.parse(event.data) as { type?: string; data?: unknown }
+          // A push is by definition the freshest thing we have, so it takes a ticket at the moment
+          // it arrives rather than when the connection opened.
+          if (message.type === eventName) apply(message.data as T, nextIssue.current++)
+          // Too large to push in one frame (a very long queue): fetch it instead.
+          else if (message.type === 'queue.changed') refresh()
+        } catch {
+          // A malformed frame is not worth tearing the connection down for.
+        }
+      }
+      connection.onclose = () => {
+        window.clearInterval(pingTimer)
+        setLive(false)
+        reconnectLater()
       }
     }
 
-    source.addEventListener(eventName, onPayload as EventListener)
-    source.onopen = () => setLive(true)
-    source.onerror = () => setLive(false)
-
+    void open()
     return () => {
-      source.removeEventListener(eventName, onPayload as EventListener)
-      source.close()
+      stopped = true
+      window.clearTimeout(reconnectTimer)
+      window.clearInterval(pingTimer)
+      connection?.close()
       setLive(false)
     }
-  }, [enabled, url, eventName, apply])
+  }, [enabled, socket, eventName, apply, refresh])
 
-  // Fallback polling, active only while the stream is not carrying updates.
+  // Fallback polling, active only while the socket is not carrying updates.
   useEffect(() => {
     if (!enabled || live) return
     // One controller for the whole interval, aborted on cleanup: the old code minted a fresh one
-    // per tick and never aborted any of them, so unmounting the page - or the stream coming back -
+    // per tick and never aborted any of them, so unmounting the page - or the socket coming back -
     // left every in-flight poll running to completion.
     const controller = new AbortController()
     const timer = window.setInterval(() => {

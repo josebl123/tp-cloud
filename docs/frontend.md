@@ -1,8 +1,9 @@
 # Q — frontend notes
 
 A Next.js App Router project built as a **static export**: `next build` produces `out/`, which is
-plain HTML, CSS and JS. There is no Next server in production, so the only running thing in the
-whole system is the Spring API.
+plain HTML, CSS and JS. There is no Next server in production: the files sit in a private S3 bucket
+and API Gateway serves them from the same origin as the API, so the site calls it with relative URLs
+and needs no CORS.
 
 ## Design language — "warm hospitality"
 
@@ -27,16 +28,28 @@ is correct in both themes.
 ## The pieces that matter
 
 **`lib/useLiveResource.ts`** — one resource, kept in sync. The first read is a plain `fetch`, not the
-stream, because `EventSource` cannot report a status code and a missing ticket has to surface as
-"this ticket does not exist" rather than a silent connection failure. After that the SSE stream
-pushes every change. Polling is the safety net, not the mechanism: it runs only while the stream is
-down, so a proxy that blocks `text/event-stream` degrades to a slightly slower app instead of a
-broken one.
+WebSocket, because a WebSocket cannot report a status code and a missing ticket has to surface as
+"this ticket does not exist" rather than a silent connection failure. After that the socket pushes
+every change. It reconnects with backoff (API Gateway closes a connection after two hours, or ten
+idle minutes, so it also pings every five) and reloads over REST on every reconnection, since
+whatever happened while it was down was not pushed. Polling is the safety net, not the mechanism: it
+runs only while the socket is down, so a network that blocks WebSockets degrades to a slightly slower
+app instead of a broken one.
 
-**`lib/api.ts`** — a typed client that turns the backend's RFC 7807 responses into an `ApiError`
-carrying the stable `code`, so the UI can branch on `QUEUE_FULL` rather than on prose.
+**`lib/api.ts`** — a typed client that turns the API's RFC 7807 responses into an `ApiError`
+carrying the stable `code`, so the UI can branch on `QUEUE_FULL` rather than on prose. It also gets
+the address the WebSocket opens with: the customer's own ticket token, or for staff a one-time ticket
+from `POST /queues/{id}/ws-tickets`, so the Cognito token never goes in a URL.
 
-**`lib/session.ts` / `lib/auth.tsx`** — the staff bearer token in `localStorage` (a static SPA has no
+**`lib/cognito.ts`** — sign-up and sign-in straight against Cognito's JSON API with `fetch`, from
+the site's own pages: no SDK and no hosted login page. Cognito's errors are translated to the codes
+the API used, so the pages need no new cases.
+
+**`lib/config.ts`** — what the site learns at runtime: the Cognito ids and the WebSocket address.
+They only exist after `terraform apply`, and the site is built before it, so Terraform writes them
+to `config.json` next to the site and the page reads it once per load.
+
+**`lib/session.ts` / `lib/auth.tsx`** — the staff token in `localStorage` (a static SPA has no
 server of its own to hold a session cookie) and a context that restores it on load. The panel guard
 waits for that restore before deciding, so reloading the board never bounces a signed-in operator
 back to the sign-in screen.
@@ -148,7 +161,7 @@ never aborted any of them.
 
 `ConfirmDialog`'s focus effect listed `onCancel` in its dependencies, and every call site passes a
 fresh inline arrow — so any parent re-render tore the effect down and re-ran it. On the staff board
-an SSE update arriving while the dialog was open **dragged focus off Cancel and onto the destructive
+a live update arriving while the dialog was open **dragged focus off Cancel and onto the destructive
 confirm button**; pressing Enter then removed a real customer. The callback now lives in a ref and
 the effect is keyed on `open` alone. Reproduced before the fix and verified after.
 
@@ -163,21 +176,13 @@ rendering its last snapshot of customer names and email addresses with no route 
 hook that already existed, was exported, and had **zero subscribers**. The same wiring plus a
 `storage` listener makes signing out reach the other tabs, which it previously did not.
 
-### Left deliberately
-
-The demo credentials on the sign-in page ship by default, because the live demo needs them. They are
-build-time gated: `NEXT_PUBLIC_SHOW_DEMO_LOGIN=false` removes the block from the bundle entirely
-rather than hiding it. **Set it for any public deployment** — this repository is public and those are
-working credentials.
-
 
 ## Known limits
 
-* **The staff stream passes its token as a query parameter**, because `EventSource` cannot set
-  headers. Tokens can therefore appear in access logs. Behind a proxy that converts the token to a
-  cookie this goes away.
-* **No test suite yet.** The API is covered by 118 tests; the frontend is verified by hand against a
-  running stack. Playwright is the obvious next step.
+* **No test suite yet.** The functions are covered by 128 tests; the frontend is verified by hand
+  against a deployed stack. Playwright is the obvious next step.
+* **No local API.** `npm run dev` proxies `/api/v1` and `config.json` to the deployed site
+  (`DEV_API_URL`, see `next.config.ts`), so developing the frontend needs the lab running.
 * **No per-page `<title>`.** Only the ticket page sets one (it changes to signal the turn). Two staff
   tabs are therefore indistinguishable in the tab bar.
 * **No navigation guard on unsaved settings.** The page says you have unsaved changes; leaving it
