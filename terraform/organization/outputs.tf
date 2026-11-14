@@ -83,3 +83,13 @@ output "waf_web_acl_name" {
   description = "Web ACL de WAF que protege la API REST: en la consola de WAF muestra los pedidos bloqueados."
   value       = aws_wafv2_web_acl.api.name
 }
+
+output "analytics" {
+  description = "El data lake: la base y la tabla de hechos en el catálogo de Glue, y el delivery stream de Firehose que la carga."
+  value = {
+    database        = aws_glue_catalog_database.analytics.name
+    table           = aws_glue_catalog_table.visits.name
+    location        = local.visits_location
+    delivery_stream = aws_kinesis_firehose_delivery_stream.visits.name
+  }
+}

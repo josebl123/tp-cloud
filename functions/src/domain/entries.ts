@@ -5,7 +5,7 @@
 // daba el `SELECT … FOR UPDATE`, la da ahora la persistencia con la versión de la cola.
 
 import { conflict, notFound, validation } from './errors.js'
-import { recordServiceTime } from './estimation.js'
+import { averageServiceTime, recordServiceTime, simulateAll } from './estimation.js'
 import { allocateEndKey, applyNoShow, expireDue } from './grace.js'
 import { accepts, ensureLaneCapacity, selectLane } from './lanes.js'
 import { rotation, select } from './selector.js'
@@ -111,6 +111,17 @@ export function join(session: Session, command: JoinCommand): Entry {
   queue.nextTicketNumber += 1
   session.touchQueue()
   session.addEntry(entry)
+
+  // La misma estimación que ve el cliente en su ticket, guardada para compararla después con la real.
+  const simulation = simulateAll(
+    queue,
+    session.state.lanes,
+    session.waiting(),
+    session.inService(),
+    averageServiceTime(queue).milliseconds,
+  ).get(entry.id)
+  entry.joinEstimateSeconds = simulation ? Math.round(simulation.estimatedWaitMilliseconds / 1000) : null
+
   session.record('ENTRY_JOINED', CUSTOMER, entry, { ticketNumber: entry.ticketNumber, laneId: lane.id })
   return entry
 }

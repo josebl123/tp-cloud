@@ -8,7 +8,7 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
-          include: ['test/domain/**/*.test.ts', 'test/handlers/**/*.test.ts', 'test/notifications/**/*.test.ts'],
+          include: ['test/analytics/**/*.test.ts', 'test/domain/**/*.test.ts', 'test/handlers/**/*.test.ts', 'test/notifications/**/*.test.ts'],
         },
       },
       {

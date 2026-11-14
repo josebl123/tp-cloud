@@ -131,6 +131,11 @@ export interface Entry {
   servingStartedAt: string | null
   finishedAt: string | null
   graceExpiresAt: string | null
+  /**
+   * La espera que se le estimó al anotarse, en segundos: la analítica la compara con la real para
+   * medir qué tan bien estima la fila. null si no había con qué estimar; ausente en entradas viejas.
+   */
+  joinEstimateSeconds?: number | null
 }
 
 /** Un hecho de dominio. Se escribe en la misma transacción que el cambio que lo produjo. */

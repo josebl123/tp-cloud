@@ -256,3 +256,14 @@ variable "waf_public_rate_limit" {
     error_message = "WAF acepta un tope entero de al menos 10 pedidos por ventana."
   }
 }
+
+variable "lake_buffer_seconds" {
+  description = "Cada cuánto escribe Firehose un archivo en el data lake, si no juntó antes 64 MB. Más alto, archivos más grandes y menos; más bajo, una visita aparece antes en el lake."
+  type        = number
+  default     = 60
+
+  validation {
+    condition     = floor(var.lake_buffer_seconds) == var.lake_buffer_seconds && var.lake_buffer_seconds >= 60 && var.lake_buffer_seconds <= 900
+    error_message = "Con particionado dinámico, Firehose acepta de 60 a 900 segundos, enteros."
+  }
+}

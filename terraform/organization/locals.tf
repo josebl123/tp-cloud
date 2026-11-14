@@ -33,6 +33,10 @@ locals {
       # Las funciones apuntan a una versión exacta del zip, así que el versionado es obligatorio.
       versioning_enabled = true
     }
+    # El data lake (analytics.tf): Firehose solo agrega archivos nuevos, nunca reescribe uno.
+    lake = {
+      versioning_enabled = false
+    }
   }
 
   logged_bucket_names = {
@@ -86,6 +90,7 @@ locals {
     broadcaster = { queue = "push", timeout = 30, batch_size = 10 }
     notifier    = { queue = "notifications", timeout = 30, batch_size = 10 }
     lifecycle   = { queue = "lifecycle", timeout = 60, batch_size = 5 }
+    archiver    = { queue = "analytics", timeout = 30, batch_size = 10 }
   }
 
   # Las que reaccionan a eventos: el stream, el WebSocket, las colas y la carga de demo.
@@ -145,6 +150,16 @@ locals {
         LIFECYCLE_QUEUE_URL = module.queues["lifecycle"].url
       }
     }
+    # Consume q-analytics y manda a Firehose el hecho de cada visita terminada (analytics.tf).
+    archiver = {
+      description = "Arma el hecho de cada visita terminada y lo carga en el data lake por Firehose."
+      memory_size = 256
+      timeout     = local.consumers.archiver.timeout
+      environment = {
+        TABLE_NAME           = module.main_table.dynamodb_table_id
+        DELIVERY_STREAM_NAME = aws_kinesis_firehose_delivery_stream.visits.name
+      }
+    }
     # Carga los datos de demo. La invoca Terraform (seed.tf), no API Gateway.
     seed = {
       description = "Datos de demo: un local con dos colas y sus carriles."
@@ -195,7 +210,18 @@ locals {
       event_types             = null
       max_message_age_seconds = null
     }
+    # La analítica: solo los eventos que pueden cerrar una visita. El archiver la carga en el lake.
+    analytics = {
+      fifo                    = false
+      consumer_timeout        = local.consumers.archiver.timeout
+      from_topic              = true
+      event_types             = local.visit_end_event_types
+      max_message_age_seconds = null
+    }
   }
+
+  # Un ausente puede volver a la fila (política REQUEUE): el archiver mira si la entrada terminó.
+  visit_end_event_types = ["ENTRY_SERVED", "ENTRY_LEFT", "ENTRY_NO_SHOW"]
 
   notification_event_types = [
     "ENTRY_JOINED",

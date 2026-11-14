@@ -296,6 +296,26 @@ export class QueueStore {
   }
 
   /**
+   * La cola y sus carriles, sin las entradas: una sola consulta. La usa el archiver, que solo
+   * necesita los nombres para el hecho de una visita.
+   */
+  async configuration(queueId: string): Promise<{ queue: Queue; lanes: Lane[] } | null> {
+    const config = await this.queryAll(
+      {
+        KeyConditionExpression: 'PK = :pk AND SK BETWEEN :from AND :to',
+        ExpressionAttributeValues: { ':pk': keys.queuePk(queueId), ':from': 'LANE#', ':to': keys.QUEUE_META_SK },
+      },
+      false,
+    )
+    const metaItem = config.find((item) => item['SK'] === keys.QUEUE_META_SK)
+    if (!metaItem) return null
+    return {
+      queue: items.strip<Queue>(metaItem),
+      lanes: config.filter((item) => item['kind'] === 'LANE').map((item) => items.strip<Lane>(item)),
+    }
+  }
+
+  /**
    * El establecimiento de una cola, sin leer la cola entera. Nunca cambia, así que alcanza para
    * autorizar antes de mutar.
    */

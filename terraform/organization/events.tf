@@ -1,7 +1,8 @@
 # El bus de eventos:
 #
 #   q-main ──Streams──▶ λ stream-publisher ──▶ SNS FIFO q-queue-events ──┬─▶ SQS FIFO q-push
-#                              │                                         └─▶ SQS q-notifications (filtrada)
+#                              │                                         ├─▶ SQS q-notifications (filtrada)
+#                              │                                         └─▶ SQS q-analytics (filtrada) ─▶ Firehose
 #                              └──────────────────────────────────────────▶ SQS q-lifecycle (con demora)
 #
 # Cada evento es un ítem escrito en la misma transacción que el cambio que describe: existe si y

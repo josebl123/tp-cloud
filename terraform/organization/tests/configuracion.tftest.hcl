@@ -57,6 +57,7 @@ run "el_plan_se_arma_con_los_valores_por_defecto" {
     condition = output.bucket_names == {
       spa       = "q-spa-123456789012-us-east-1"
       artifacts = "q-artifacts-123456789012-us-east-1"
+      lake      = "q-lake-123456789012-us-east-1"
       logs      = "q-logs-123456789012-us-east-1"
     }
     error_message = "Los nombres de los buckets salen de la cuenta y la región, y se conocen en el plan (el pipeline los lee del plan para crearlos)."
@@ -151,4 +152,38 @@ run "tope_de_waf_invalido" {
   }
 
   expect_failures = [var.waf_public_rate_limit]
+}
+
+run "el_lake_recibe_solo_visitas_terminadas_particionadas_por_dia" {
+  command = plan
+
+  assert {
+    condition     = jsondecode(aws_sns_topic_subscription.queues["analytics"].filter_policy).type == ["ENTRY_SERVED", "ENTRY_LEFT", "ENTRY_NO_SHOW"]
+    error_message = "q-analytics recibe solo los eventos que pueden cerrar una visita."
+  }
+
+  assert {
+    condition     = aws_kinesis_firehose_delivery_stream.visits.extended_s3_configuration[0].prefix == "visitas/dt=!{partitionKeyFromQuery:dt}/"
+    error_message = "Firehose escribe cada visita en la carpeta de su día, que sale del propio registro."
+  }
+
+  assert {
+    condition     = aws_glue_catalog_table.visits.parameters["projection.enabled"] == "true" && aws_glue_catalog_table.visits.partition_keys[0].name == "dt"
+    error_message = "La tabla de hechos se particiona por dt con proyección: sin crawler ni particiones registradas a mano."
+  }
+
+  assert {
+    condition     = !contains([for column in local.visit_columns : column.name], "dt")
+    error_message = "dt es la partición: no puede ser además una columna de los archivos."
+  }
+}
+
+run "buffer_del_lake_demasiado_corto" {
+  command = plan
+
+  variables {
+    lake_buffer_seconds = 30
+  }
+
+  expect_failures = [var.lake_buffer_seconds]
 }
