@@ -4,8 +4,9 @@
  * Where the staff bearer token lives.
  *
  * Kept in `localStorage` because the app is a static SPA with no server of its own to hold a session
- * cookie. The token is short-lived (12h) and scoped to staff actions; customers never have one, so
- * nothing a customer holds is at stake here.
+ * cookie. The ID token lasts an hour and is scoped to staff actions; customers never have one, so
+ * nothing a customer holds is at stake here. `freshToken` asks the provider (Cognito) for a valid
+ * one before every request, renewing it with the refresh token when it expired.
  */
 
 const TOKEN_KEY = 'q.staff.token'
@@ -34,6 +35,37 @@ export function setToken(token: string | null): void {
     // Ignore: the in-memory copy still carries this tab's session.
   }
   listeners.forEach((listener) => listener(token))
+}
+
+let provider: (() => Promise<string | null>) | null = null
+
+/** Who can hand out a valid token: Cognito, which renews it when it expired. */
+export function setTokenProvider(next: () => Promise<string | null>): void {
+  provider = next
+}
+
+/**
+ * The token to send with a request, renewed if it expired. When the session can no longer be renewed
+ * (the refresh token expired too), the session ends here, like a sign-out.
+ */
+export async function freshToken(): Promise<string | null> {
+  const current = getToken()
+  if (current === null || provider === null) return current
+  const token = await provider()
+  if (token === null) {
+    setToken(null)
+    return null
+  }
+  if (token !== current) {
+    // A renewal is not a new session: the copy is updated without notifying anyone.
+    inMemoryToken = token
+    try {
+      window.localStorage.setItem(TOKEN_KEY, token)
+    } catch {
+      // Ignore: the in-memory copy still carries this tab's session.
+    }
+  }
+  return token
 }
 
 export function subscribeToToken(listener: (token: string | null) => void): () => void {

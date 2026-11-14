@@ -2,11 +2,28 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { ApiError, api } from './api'
-import { signIn, signUp } from './cognito'
-import { getToken, setToken, subscribeToToken } from './session'
+import { confirmSignUp, currentIdToken, resendCode, signIn, signOut, signUp } from './cognito'
+import { setToken, setTokenProvider, subscribeToToken } from './session'
 import type { EstablishmentView, UserView } from './types'
 
 const ACTIVE_ESTABLISHMENT_KEY = 'q.staff.establishment'
+/**
+ * The business someone registered and still has to create. The account exists as soon as Cognito
+ * accepts the sign-up, but the business can only be created once the email is confirmed and there
+ * is a session: it waits here, in case the confirmation happens later from the sign-in page.
+ */
+const PENDING_BUSINESS_KEY = 'q.staff.pendingBusiness'
+
+// Every request asks Cognito for a valid token, renewed with the refresh token when it expired.
+setTokenProvider(currentIdToken)
+
+function storage(): Storage | null {
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
 
 interface AuthState {
   user: UserView | null
@@ -20,12 +37,16 @@ interface AuthState {
   retryRestore: () => void
   isOwner: boolean
   login: (email: string, password: string) => Promise<void>
+  /** Creates the account; Cognito emails a code that `confirmAccount` checks. */
   register: (input: {
     email: string
     password: string
     displayName: string
     establishmentName: string
   }) => Promise<void>
+  /** Confirms the email with the code, signs in, and creates the business registered with it. */
+  confirmAccount: (email: string, code: string, password: string) => Promise<void>
+  resendCode: (email: string) => Promise<void>
   logout: () => void
   selectEstablishment: (id: string) => void
   reloadEstablishments: () => Promise<void>
@@ -64,10 +85,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false
 
     const restore = async () => {
-      if (!getToken()) {
+      // Cognito keeps the session: if its refresh token is still valid, this renews the ID token.
+      const token = await currentIdToken()
+      if (!token) {
+        setToken(null)
         setInitialising(false)
         return
       }
+      setToken(token)
       try {
         const me = await api.auth.me()
         if (cancelled) return
@@ -102,6 +127,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () =>
       subscribeToToken((token) => {
         if (token === null) {
+          void signOut()
           setUser(null)
           setEstablishments([])
           setActiveId(null)
@@ -139,26 +165,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   /**
-   * Signing up is three steps now that accounts live in Cognito: create the account (confirmed on
-   * the spot by the pre sign-up trigger), sign in, and create the business as its owner. The page
-   * still asks for everything at once, as before.
+   * Signing up is two steps: create the account, and confirm the email with the code Cognito sends.
+   * The business is created after the confirmation, once there is a session to create it with.
    */
   const register = useCallback(
     async (input: { email: string; password: string; displayName: string; establishmentName: string }) => {
       await signUp({ email: input.email, password: input.password, displayName: input.displayName })
-      const token = await signIn(input.email, input.password)
+      storage()?.setItem(
+        PENDING_BUSINESS_KEY,
+        JSON.stringify({ email: input.email.toLowerCase(), name: input.establishmentName }),
+      )
+    },
+    [],
+  )
+
+  const confirmAccount = useCallback(
+    async (email: string, code: string, password: string) => {
+      await confirmSignUp(email, code)
+      const token = await signIn(email, password)
       // The token has to be in place before creating the business: that call is authenticated.
       setToken(token)
-      const establishment = await api.establishments.create({
-        name: input.establishmentName,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      })
-      await startSession(token, establishment.id)
+
+      let establishmentId: string | undefined
+      const pending = (() => {
+        try {
+          return JSON.parse(storage()?.getItem(PENDING_BUSINESS_KEY) ?? 'null') as { email: string; name: string } | null
+        } catch {
+          return null
+        }
+      })()
+      if (pending && pending.email === email.toLowerCase()) {
+        const establishment = await api.establishments.create({
+          name: pending.name,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        })
+        establishmentId = establishment.id
+        storage()?.removeItem(PENDING_BUSINESS_KEY)
+      }
+      await startSession(token, establishmentId)
     },
     [startSession],
   )
 
   const logout = useCallback(() => {
+    void signOut()
     setToken(null)
     setUser(null)
     setEstablishments([])
@@ -199,6 +249,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isOwner: activeEstablishment?.role === 'OWNER',
       login,
       register,
+      confirmAccount,
+      resendCode,
       logout,
       selectEstablishment,
       reloadEstablishments: loadEstablishments,
@@ -211,6 +263,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       restoreError,
       login,
       register,
+      confirmAccount,
       logout,
       selectEstablishment,
       loadEstablishments,

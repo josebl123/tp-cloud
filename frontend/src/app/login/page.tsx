@@ -7,6 +7,8 @@ import { errorMessage } from '@/lib/format'
 import { useAuth } from '@/lib/auth'
 import { useI18n } from '@/lib/i18n'
 import { AuthShell } from '@/components/AuthShell'
+import { ConfirmCodeForm } from '@/components/ConfirmCodeForm'
+import { ApiError } from '@/lib/api'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Field } from '@/components/ui/Field'
@@ -19,6 +21,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // An account that signed up but never entered the code cannot sign in until it does.
+  const [awaitingCode, setAwaitingCode] = useState(false)
 
   useEffect(() => {
     if (!initialising && user) router.replace('/panel')
@@ -32,9 +36,26 @@ export default function LoginPage() {
       await login(email.trim(), password)
       router.replace('/panel')
     } catch (cause) {
-      setError(errorMessage(t, cause))
       setSubmitting(false)
+      if (cause instanceof ApiError && cause.code === 'ACCOUNT_NOT_CONFIRMED') {
+        setAwaitingCode(true)
+        return
+      }
+      setError(errorMessage(t, cause))
     }
+  }
+
+  if (awaitingCode) {
+    return (
+      <AuthShell>
+        <ConfirmCodeForm
+          email={email.trim()}
+          password={password}
+          intro={t('auth.notConfirmed')}
+          onConfirmed={() => router.replace('/panel')}
+        />
+      </AuthShell>
+    )
   }
 
   return (

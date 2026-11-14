@@ -164,13 +164,13 @@ variable "public_write_burst_limit" {
 }
 
 variable "session_hours" {
-  description = "Horas que dura una sesión del staff antes de volver a iniciar sesión."
+  description = "Horas que dura una sesión del staff (el refresh token) antes de volver a iniciar sesión. Los tokens de acceso duran una hora y se renuevan solos."
   type        = number
   default     = 12
 
   validation {
     condition     = floor(var.session_hours) == var.session_hours && var.session_hours >= 1 && var.session_hours <= 24
-    error_message = "Cognito acepta tokens de 1 a 24 horas enteras."
+    error_message = "La sesión tiene que durar entre 1 y 24 horas enteras."
   }
 }
 

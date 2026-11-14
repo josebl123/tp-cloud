@@ -7,6 +7,7 @@ import { errorMessage } from '@/lib/format'
 import { useAuth } from '@/lib/auth'
 import { useI18n } from '@/lib/i18n'
 import { AuthShell } from '@/components/AuthShell'
+import { ConfirmCodeForm } from '@/components/ConfirmCodeForm'
 import { Alert } from '@/components/ui/Alert'
 import { Button } from '@/components/ui/Button'
 import { Field } from '@/components/ui/Field'
@@ -23,6 +24,8 @@ export default function RegisterPage() {
   })
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  // After the account is created, Cognito emails a code: the page moves on to ask for it.
+  const [awaitingCode, setAwaitingCode] = useState(false)
 
   const update = (key: keyof typeof form) => (event: { target: { value: string } }) =>
     setForm((current) => ({ ...current, [key]: event.target.value }))
@@ -38,11 +41,24 @@ export default function RegisterPage() {
         email: form.email.trim(),
         password: form.password,
       })
-      router.replace('/panel')
+      setSubmitting(false)
+      setAwaitingCode(true)
     } catch (cause) {
       setError(errorMessage(t, cause))
       setSubmitting(false)
     }
+  }
+
+  if (awaitingCode) {
+    return (
+      <AuthShell>
+        <ConfirmCodeForm
+          email={form.email.trim()}
+          password={form.password}
+          onConfirmed={() => router.replace('/panel')}
+        />
+      </AuthShell>
+    )
   }
 
   return (
@@ -83,6 +99,7 @@ export default function RegisterPage() {
           onChange={update('password')}
           hint={t('auth.passwordHint')}
           minLength={8}
+          pattern="(?=.*[a-z])(?=.*[0-9]).{8,}"
           required
         />
         {error ? <Alert kind="error">{error}</Alert> : null}

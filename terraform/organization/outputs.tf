@@ -61,7 +61,6 @@ output "function_names" {
   value = merge(
     { for key, function in module.api_functions : key => function.name },
     { for key, function in module.workers : key => function.name },
-    { pre_signup = module.pre_signup.name },
   )
 }
 

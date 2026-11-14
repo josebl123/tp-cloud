@@ -21,10 +21,6 @@ resource "aws_cognito_user" "demo" {
     email_verified = "true"
     name           = local.demo_staff_name
   }
-
-  # Crear un usuario dispara el trigger de pre sign-up, y Cognito solo puede invocarlo cuando el
-  # permiso ya existe. Nada en este recurso referencia al permiso: Terraform no lo vería.
-  depends_on = [aws_lambda_permission.pre_signup]
 }
 
 # La función usa las mismas operaciones del dominio que la API, así los datos tienen exactamente la

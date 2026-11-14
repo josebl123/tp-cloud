@@ -57,10 +57,10 @@ Cada nodo del diagrama es un recurso que crea este Terraform.
 |---|---|
 | API Gateway REST | Una sola URL HTTPS para el sitio (leído del bucket privado con `LabRole`) y para la API `/api/v1`. Throttling por ruta |
 | API Gateway WebSocket | Actualizaciones en vivo del tablero y del ticket |
-| Lambda (9 funciones, Node 22) | `public` y `staff` atienden la API; `ws-connections` maneja los sockets; `stream-publisher`, `broadcaster`, `notifier` y `lifecycle` procesan eventos; `cognito-pre-signup` confirma las altas y `seed` carga la demo |
+| Lambda (8 funciones, Node 22) | `public` y `staff` atienden la API; `ws-connections` maneja los sockets; `stream-publisher`, `broadcaster`, `notifier` y `lifecycle` procesan eventos; `seed` carga la demo |
 | DynamoDB | `q-main`, tabla única con todo el negocio y Streams; `q-connections`, los sockets abiertos |
 | SNS FIFO y SQS | El bus de eventos: cada cambio de una cola se publica en orden y se reparte a tres colas, cada una con su DLQ |
-| Cognito | Cuentas del staff. API Gateway valida el token sin invocar ninguna Lambda |
+| Cognito | Cuentas del staff: email verificado con un código, inicio de sesión con SRP (la contraseña no viaja) y tokens de una hora que se renuevan solos. API Gateway valida el token sin invocar ninguna Lambda |
 | Secrets Manager | La contraseña del SMTP de Gmail para los mails (ver [Mails](#8-mails)) |
 | S3 | Tres buckets privados: el sitio, el código de las Lambdas y los logs de acceso. Más el del estado de Terraform |
 | CloudWatch | Logs de las funciones y alarmas (mensajes en una DLQ, cola atrasada, fallas del stream) que avisan por SNS |
@@ -70,8 +70,9 @@ Cada nodo del diagrama es un recurso que crea este Terraform.
 1. El navegador pide el sitio a **API Gateway REST**, que lo lee del bucket privado **S3 spa** con
    `LabRole`. Junto con el sitio baja `config.json`, que Terraform genera con los ids de Cognito y la
    URL del WebSocket.
-2. El staff se registra e inicia sesión directo contra **Cognito**. Un trigger
-   (`λ cognito-pre-signup`) confirma la cuenta al instante, y Cognito devuelve un token.
+2. El staff se registra contra **Cognito** y confirma su email con el código que le llega. Inicia
+   sesión con SRP, que demuestra la contraseña sin enviarla, y Cognito devuelve tokens de una hora
+   que el navegador renueva solo durante el turno.
 3. El navegador llama a la API en `/api/v1`. Las rutas públicas (anotarse, ver el ticket, salir de
    la fila) van a **`λ public`**. Las del staff llevan el token, que API Gateway valida contra
    Cognito antes de invocar a **`λ staff`**. Cada operación es una transacción en **DynamoDB
@@ -143,7 +144,7 @@ responsabilidad:
 | `variables.tf`, `outputs.tf`, `locals.tf`, `data.tf` | Interfaz, valores derivados y lo que ya existe en la cuenta |
 | `storage.tf`, `site.tf` | Configuración de los buckets, objetos del sitio y `config.json` |
 | `tables.tf` | Las dos tablas de DynamoDB (módulo externo) |
-| `functions.tf`, `auth.tf` | Lambdas, sus disparadores SQS y Cognito |
+| `functions.tf`, `auth.tf` | Lambdas y sus disparadores SQS; Cognito |
 | `api.tf`, `openapi.tf`, `realtime.tf` | API REST (desde un documento OpenAPI) y API WebSocket |
 | `events.tf`, `monitoring.tf`, `notifications.tf` | Bus de eventos, alarmas, secreto SMTP e identidades SES opcionales |
 | `seed.tf`, `seed/demo.json` | Usuario y datos de demo |
@@ -155,7 +156,7 @@ además la cuenta y la región, así no chocan en ninguna cuenta.
 
 | Módulo | Tipo | Se usa en | Qué encapsula |
 |---|---|---|---|
-| [`lambda-function`](terraform/modules/lambda-function/README.md) | Propio | 9 funciones (`functions.tf`, `auth.tf`) | Empaqueta el bundle (`archive_file`), lo sube versionado al bucket de código, crea la función y su log group con retención. Devuelve nombre, ARN, ARN de invocación y hash del código |
+| [`lambda-function`](terraform/modules/lambda-function/README.md) | Propio | 8 funciones (`functions.tf`) | Empaqueta el bundle (`archive_file`), lo sube versionado al bucket de código, crea la función y su log group con retención. Devuelve nombre, ARN, ARN de invocación y hash del código |
 | [`private-bucket`](terraform/modules/private-bucket/README.md) | Propio | 3 buckets (`storage.tf`) | Sobre un bucket existente: bloqueo de acceso público, propiedad de objetos, versionado, ciclo de vida y logs opcionales, y una política que exige TLS |
 | [`queue-with-dlq`](terraform/modules/queue-with-dlq/README.md) | Propio | 3 colas (`events.tf`) | Cola estándar o FIFO con su DLQ, redrive, permiso para que SNS publique y alarmas de DLQ y de atraso |
 | [`terraform-aws-modules/dynamodb-table/aws`](https://registry.terraform.io/modules/terraform-aws-modules/dynamodb-table/aws/5.5.2) | Externo, versión `5.5.2` fija | 2 tablas (`tables.tf`) | Claves, índice secundario, TTL, Streams y PITR |
@@ -196,7 +197,7 @@ Se usan los cuatro:
 |---|---|---|
 | `for_each` | `for_each = local.queues` en `events.tf` | Una cola por clave del mapa (`push`, `notifications`, `lifecycle`). También las funciones, los buckets, los objetos del sitio, las rutas y las suscripciones |
 | `count` | `count = var.demo_enabled ? 1 : 0` en `seed.tf` | Recursos opcionales: los datos de demo, la suscripción de alarmas, el secreto SMTP y las opciones de los módulos |
-| `depends_on` | `depends_on = [aws_cloudwatch_log_group.this]` en `modules/lambda-function/main.tf` | Dependencias que ninguna referencia expresa: el log group antes de la función, y el permiso del trigger de Cognito antes de crear el usuario de demo |
+| `depends_on` | `depends_on = [aws_cloudwatch_log_group.this]` en `modules/lambda-function/main.tf` | Dependencias que ninguna referencia expresa: el log group antes de la función, y el bloqueo de acceso público de un bucket antes de su política |
 | `lifecycle` | `create_before_destroy = true` en `api.tf` y `realtime.tf` | El deployment nuevo de cada API existe antes de borrar el que usa el stage, así la API no queda sin servir |
 
 ### 4.5 Locals y datasources
@@ -228,7 +229,7 @@ lab. Todas tienen tipo y descripción, y casi todas validación.
 | `log_retention_days`, `access_logs_expiration_days` | `14`, `30` | Retención de logs |
 | `site_throttle_*`, `api_throttle_*`, `public_write_*` | — | Límites de pedidos del sitio, de la API y de las rutas anónimas |
 | `joins_per_minute` | `60` | Ingresos a una cola por IP y por minuto |
-| `session_hours` | `12` | Duración de la sesión del staff |
+| `session_hours` | `12` | Duración de la sesión del staff (el refresh token; los tokens duran una hora) |
 | `demo_enabled`, `demo_email` | `true`, `demo@queue.example` | Datos y usuario de demo |
 | `alert_email` | `null` | Mail que recibe las alarmas |
 | `consumer_max_concurrency` | `2` | Ejecuciones simultáneas de cada consumidor |
@@ -473,8 +474,9 @@ como staff y otra como cliente.
 ### Como staff
 
 1. **Crear la cuenta.** En la URL del sitio, presionar **Crear mi primera fila** y completar el nombre
-   del negocio, tu nombre, el email y una contraseña de al menos 8 caracteres. La cuenta queda activa
-   al instante, sin código de confirmación, y con el negocio creado. También se puede entrar con el
+   del negocio, tu nombre, el email y una contraseña de al menos 8 caracteres, con letras y números.
+   Cognito manda un código a ese email: al ingresarlo, la cuenta queda confirmada y el negocio creado.
+   El código lo manda el remitente de Cognito y puede caer en spam. También se puede entrar con el
    usuario de demo, que ya tiene un negocio con dos filas (ver
    [Contraseña del usuario de demo](#contraseña-del-usuario-de-demo)).
 2. **Crear una fila.** En el panel, presionar **Nueva fila**, ponerle un nombre y presionar **Crear

@@ -1,6 +1,12 @@
 # Las cuentas del staff, en Cognito. El navegador se registra e inicia sesión directo contra Cognito,
 # desde las páginas propias del sitio (sin el Hosted UI, así no hace falta una URL de redirección
 # HTTPS), y manda el token a la API, donde lo valida el authorizer de API Gateway.
+#
+# Tres decisiones de seguridad:
+#   - El email se verifica con un código antes de poder entrar: nadie crea una cuenta con un mail ajeno.
+#   - El inicio de sesión es SRP: el navegador demuestra que conoce la contraseña sin enviarla.
+#   - Los tokens duran una hora y se renuevan solos con el refresh token, que dura un turno: un token
+#     robado sirve poco tiempo, y el staff no tiene que volver a entrar en medio del turno.
 
 resource "aws_cognito_user_pool" "this" {
   name = format("%s-staff", var.project)
@@ -8,12 +14,12 @@ resource "aws_cognito_user_pool" "this" {
   # Se inicia sesión con el email; el nombre de usuario interno es el `sub`.
   username_attributes = ["email"]
 
-  # Ocho caracteres y nada más, igual que pedía la versión Java: el frontend ya lo explica así.
+  # Ocho caracteres, con letras y números.
   password_policy {
     minimum_length                   = 8
-    require_lowercase                = false
+    require_lowercase                = true
     require_uppercase                = false
-    require_numbers                  = false
+    require_numbers                  = true
     require_symbols                  = false
     temporary_password_validity_days = 7
   }
@@ -30,9 +36,14 @@ resource "aws_cognito_user_pool" "this" {
     }
   }
 
-  # Confirma la cuenta en el momento del registro (functions/src/handlers/cognito-pre-signup.ts).
-  lambda_config {
-    pre_sign_up = module.pre_signup.arn
+  # Cognito manda un código al email al registrarse, y la cuenta no puede iniciar sesión hasta
+  # confirmarlo. Usa su propio remitente (hasta 50 mails por día), que alcanza para el staff.
+  auto_verified_attributes = ["email"]
+
+  verification_message_template {
+    default_email_option = "CONFIRM_WITH_CODE"
+    email_subject        = "Tu código de Queue"
+    email_message        = "Tu código para confirmar la cuenta de Queue es {####}."
   }
 
   account_recovery_setting {
@@ -52,45 +63,24 @@ resource "aws_cognito_user_pool_client" "web" {
   user_pool_id = aws_cognito_user_pool.this.id
 
   generate_secret = false
+  # SRP para iniciar sesión (la contraseña no viaja) y refresh para renovar los tokens. Sin
+  # USER_PASSWORD_AUTH: ningún cliente puede mandar la contraseña en el pedido.
   explicit_auth_flows = [
-    "ALLOW_USER_PASSWORD_AUTH",
+    "ALLOW_USER_SRP_AUTH",
     "ALLOW_REFRESH_TOKEN_AUTH",
   ]
 
-  # Un turno entero sin volver a iniciar sesión, como el token de la versión Java.
-  id_token_validity      = var.session_hours
-  access_token_validity  = var.session_hours
-  refresh_token_validity = 30
+  # Tokens de una hora; el refresh token dura un turno y los renueva sin volver a pedir la contraseña.
+  id_token_validity      = 1
+  access_token_validity  = 1
+  refresh_token_validity = var.session_hours
   token_validity_units {
     id_token      = "hours"
     access_token  = "hours"
-    refresh_token = "days"
+    refresh_token = "hours"
   }
 
   # Un email inexistente y una contraseña incorrecta responden lo mismo: no se puede averiguar quién
   # tiene cuenta.
   prevent_user_existence_errors = "ENABLED"
-}
-
-# La función del trigger va aparte del mapa de functions.tf: el user pool la referencia, y la función
-# del staff referencia al user pool. En el mismo for_each, eso sería un ciclo.
-module "pre_signup" {
-  source = "../modules/lambda-function"
-
-  name               = format("%s-cognito-pre-signup", var.project)
-  description        = "Confirma en el acto las cuentas que se registran."
-  source_file        = "${var.functions_dist_dir}/cognito-pre-signup/index.mjs"
-  memory_size        = 128
-  timeout            = 5
-  role_arn           = data.aws_iam_role.lab.arn
-  artifacts_bucket   = module.private_buckets["artifacts"].name
-  log_retention_days = var.log_retention_days
-}
-
-resource "aws_lambda_permission" "pre_signup" {
-  statement_id  = "PermitirCognito"
-  action        = "lambda:InvokeFunction"
-  function_name = module.pre_signup.name
-  principal     = "cognito-idp.amazonaws.com"
-  source_arn    = aws_cognito_user_pool.this.arn
 }

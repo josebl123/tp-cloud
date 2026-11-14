@@ -1,5 +1,5 @@
 import { loadRuntimeConfig } from './config'
-import { getToken, setToken } from './session'
+import { freshToken, getToken, setToken } from './session'
 import type {
   UserView,
   EntryStatus,
@@ -82,7 +82,7 @@ async function send<T>(path: string, options: RequestOptions = {}): Promise<T> {
 
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (auth) {
-    const token = getToken()
+    const token = await freshToken()
     if (token) headers['Authorization'] = `Bearer ${token}`
   }
 
@@ -106,8 +106,8 @@ async function send<T>(path: string, options: RequestOptions = {}): Promise<T> {
 
   if (!response.ok) {
     /*
-     * A staff token lasts twelve hours, so it expires mid-shift rather than between sessions. The
-     * 401 that follows used to be handled nowhere: the board kept rendering its last snapshot of
+     * Tokens are renewed before each request, so a 401 here means the session is really over (the
+     * account was removed, or the renewal failed). It used to be handled nowhere: the board kept rendering its last snapshot of
      * customer names and emails, every action failed with a message nobody could act on, and there
      * was no route back to the sign-in screen. Dropping the token here notifies every subscriber,
      * which clears the user and lets the panel guard do its job. Public endpoints are exempt - a
