@@ -79,3 +79,7 @@ output "stream_mapping_uuid" {
   value       = aws_lambda_event_source_mapping.stream.uuid
 }
 
+output "waf_web_acl_name" {
+  description = "Web ACL de WAF que protege la API REST: en la consola de WAF muestra los pedidos bloqueados."
+  value       = aws_wafv2_web_acl.api.name
+}

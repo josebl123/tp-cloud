@@ -57,7 +57,8 @@ const TITLES: Record<number, string> = {
   500: 'Internal Server Error',
 }
 
-const NO_STORE = { 'Cache-Control': 'no-store' }
+// Ninguna respuesta de la API se guarda en caché, y el navegador respeta su Content-Type sin adivinar.
+const NO_STORE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }
 
 // La API Java omitía los campos null (Jackson `non_null`) y el frontend los trata como ausentes.
 export const omitNulls = (key: string, value: unknown) => (value === null && key !== '' ? undefined : value)
@@ -81,7 +82,7 @@ export const noContent = (): APIGatewayProxyResult => ({ statusCode: 204, header
 export function binary(contentType: string, data: Buffer, cacheControl: string): APIGatewayProxyResult {
   return {
     statusCode: 200,
-    headers: { 'Content-Type': contentType, 'Cache-Control': cacheControl },
+    headers: { 'Content-Type': contentType, 'Cache-Control': cacheControl, 'X-Content-Type-Options': 'nosniff' },
     body: data.toString('base64'),
     isBase64Encoded: true,
   }

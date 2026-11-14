@@ -125,3 +125,30 @@ run "email_de_alertas_invalido" {
 
   expect_failures = [var.alert_email]
 }
+
+run "waf_protege_las_rutas_publicas" {
+  command = plan
+
+  assert {
+    condition = one([
+      for rule in aws_wafv2_web_acl.api.rule : rule.statement[0].rate_based_statement[0].limit
+      if rule.name == "tope-rutas-publicas"
+    ]) == var.waf_public_rate_limit
+    error_message = "El WAF tiene que tener el tope por IP en las rutas públicas."
+  }
+
+  assert {
+    condition     = length(aws_wafv2_web_acl.api.rule) == 4
+    error_message = "El WAF lleva el tope por IP y los tres grupos de reglas administradas."
+  }
+}
+
+run "tope_de_waf_invalido" {
+  command = plan
+
+  variables {
+    waf_public_rate_limit = 5
+  }
+
+  expect_failures = [var.waf_public_rate_limit]
+}

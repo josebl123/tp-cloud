@@ -245,3 +245,14 @@ variable "ses_verified_recipients" {
     error_message = "Todas las direcciones tienen que ser válidas."
   }
 }
+
+variable "waf_public_rate_limit" {
+  description = "Pedidos por minuto que acepta WAF de una misma IP en las rutas públicas, antes de bloquearla. Alto a propósito: los clientes de un local suelen compartir la IP de su Wi-Fi."
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = floor(var.waf_public_rate_limit) == var.waf_public_rate_limit && var.waf_public_rate_limit >= 10
+    error_message = "WAF acepta un tope entero de al menos 10 pedidos por ventana."
+  }
+}

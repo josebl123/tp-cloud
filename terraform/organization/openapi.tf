@@ -118,17 +118,39 @@ locals {
 
   site_header_names = ["Content-Type", "Cache-Control"]
 
+  # Encabezados de seguridad, fijos, en cada respuesta del sitio. La política de contenido (CSP) va
+  # como <meta> en el HTML (frontend/src/app/layout.tsx): un valor fijo de API Gateway va entre
+  # comillas simples, y la CSP necesita comillas simples adentro ('self').
+  site_security_headers = {
+    # Solo HTTPS, también en visitas futuras, aunque alguien escriba http://.
+    "Strict-Transport-Security" = "max-age=31536000; includeSubDomains"
+    # El navegador respeta el Content-Type y no adivina: un archivo no se ejecuta como script.
+    "X-Content-Type-Options" = "nosniff"
+    # Nadie puede mostrar el sitio dentro de un iframe propio (clickjacking).
+    "X-Frame-Options" = "DENY"
+    # Las URLs del sitio llevan tokens de tickets: no se mandan a otros sitios.
+    "Referrer-Policy" = "same-origin"
+  }
+  site_security_parameters = {
+    for header, value in local.site_security_headers : "method.response.header.${header}" => "'${value}'"
+  }
+
   # El tipo de contenido y la política de caché los decide cada objeto de S3 (site.tf).
   site_response = {
-    responseParameters = {
-      for header in local.site_header_names : "method.response.header.${header}" => "integration.response.header.${header}"
-    }
+    responseParameters = merge(
+      {
+        for header in local.site_header_names : "method.response.header.${header}" => "integration.response.header.${header}"
+      },
+      local.site_security_parameters,
+    )
   }
 
   site_method_responses = {
     for status in ["200", "404"] : status => {
       description = status == "200" ? "Archivo del sitio" : "No existe"
-      headers     = { for header in local.site_header_names : header => { schema = { type = "string" } } }
+      headers = {
+        for header in concat(local.site_header_names, keys(local.site_security_headers)) : header => { schema = { type = "string" } }
+      }
     }
   }
 
@@ -152,10 +174,13 @@ locals {
       "4\\d{2}" = {
         statusCode      = "404"
         contentHandling = "CONVERT_TO_TEXT"
-        responseParameters = {
-          "method.response.header.Content-Type"  = "'text/html; charset=utf-8'"
-          "method.response.header.Cache-Control" = "'no-store'"
-        }
+        responseParameters = merge(
+          {
+            "method.response.header.Content-Type"  = "'text/html; charset=utf-8'"
+            "method.response.header.Cache-Control" = "'no-store'"
+          },
+          local.site_security_parameters,
+        )
         responseTemplates = { for type in ["text/html", "application/json"] : type => local.not_found_template }
       }
       default = merge(local.site_response, { statusCode = "200" })
