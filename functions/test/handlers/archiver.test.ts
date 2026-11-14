@@ -85,3 +85,28 @@ describe('archiver', () => {
     expect(result.batchItemFailures.map((failure) => failure.itemIdentifier)).toEqual(['m1', 'm2'])
   })
 })
+
+describe('carga del historial', () => {
+  it('manda de a 500 y reintenta solo los registros rechazados', async () => {
+    const { sendFacts } = await import('../../src/handlers/seed.js')
+    const sizes: number[] = []
+    let first = true
+    const visits = Array.from({ length: 1200 }, (_, index) => ({ visit_id: `v${index}` }) as never)
+    const total = await sendFacts(visits, {
+      deliveryStreamName: 'q-visitas',
+      pause: async () => {},
+      firehose: {
+        async send(command) {
+          const records = command.input.Records ?? []
+          sizes.push(records.length)
+          // El primer pedido rechaza dos registros: vuelven a mandarse solos.
+          const responses = records.map((_, index) => (first && index < 2 ? { ErrorCode: 'ServiceUnavailableException' } : {}))
+          first = false
+          return { RequestResponses: responses }
+        },
+      },
+    })
+    expect(total).toBe(1200)
+    expect(sizes).toEqual([500, 2, 500, 200])
+  })
+})

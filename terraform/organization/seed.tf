@@ -45,3 +45,28 @@ resource "aws_lambda_invocation" "seed" {
     }
   }))
 }
+
+# El historial de demo: meses de visitas inventadas en el data lake, para que el tablero de análisis
+# tenga qué mostrar recién desplegado. Va aparte del seed de la operación porque no tiene que
+# repetirse con cada cambio del código: se carga una vez por día de despliegue (hasta ayer), y como los
+# ids de cada visita dependen de la cola y el día, recargar el mismo día no suma visitas nuevas.
+resource "aws_lambda_invocation" "seed_history" {
+  count = var.demo_enabled && var.demo_history_days > 0 ? 1 : 0
+
+  function_name = module.workers["seed"].name
+
+  triggers = {
+    dia = formatdate("YYYY-MM-DD", plantimestamp())
+  }
+
+  input = jsonencode({
+    history = {
+      establishment = local.demo.establishment
+      queues        = local.demo.queues
+      days          = var.demo_history_days
+    }
+  })
+
+  # El local tiene que existir antes que sus visitas (el tablero lo pide por id).
+  depends_on = [aws_lambda_invocation.seed]
+}

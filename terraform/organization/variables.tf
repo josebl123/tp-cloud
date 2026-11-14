@@ -267,3 +267,14 @@ variable "lake_buffer_seconds" {
     error_message = "Con particionado dinámico, Firehose acepta de 60 a 900 segundos, enteros."
   }
 }
+
+variable "demo_history_days" {
+  description = "Días de visitas inventadas que se cargan en el data lake con los datos de demo. 0 no carga ninguna."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = floor(var.demo_history_days) == var.demo_history_days && var.demo_history_days >= 0 && var.demo_history_days <= 365
+    error_message = "De 0 a 365 días, enteros."
+  }
+}

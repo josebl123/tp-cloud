@@ -113,6 +113,9 @@ export default function PanelHomePage() {
             <h1 className="font-display text-3xl font-semibold tracking-tight">{t('panel.today')}</h1>
             <p className="mt-1 text-sm text-muted">{activeEstablishment.name}</p>
           </div>
+          <ButtonLink href="/panel/analytics" variant="secondary" size="sm">
+            {t('panel.openAnalytics')}
+          </ButtonLink>
         </div>
 
         <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">

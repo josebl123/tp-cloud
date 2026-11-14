@@ -58,21 +58,34 @@ export interface VisitContext {
 
 const WEEKDAYS: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }
 
-/** Fecha, hora y día de la semana de un instante, en la zona horaria del local. */
-export function localParts(instant: string, timezone: string): { date: string; hour: number; weekday: number } {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat('en-US', {
+// Crear un DateTimeFormat es caro; uno por zona horaria alcanza.
+const formatters = new Map<string, Intl.DateTimeFormat>()
+const formatterFor = (timezone: string): Intl.DateTimeFormat => {
+  let formatter = formatters.get(timezone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
+      minute: '2-digit',
       hourCycle: 'h23',
       weekday: 'short',
     })
-      .formatToParts(new Date(instant))
-      .map((part) => [part.type, part.value]),
-  )
+    formatters.set(timezone, formatter)
+  }
+  return formatter
+}
+
+/** Las partes de un instante en una zona horaria, como texto: year, month, day, hour, minute, weekday. */
+export function zonedParts(instant: string | number, timezone: string): Record<string, string> {
+  return Object.fromEntries(formatterFor(timezone).formatToParts(new Date(instant)).map((part) => [part.type, part.value]))
+}
+
+/** Fecha, hora y día de la semana de un instante, en la zona horaria del local. */
+export function localParts(instant: string, timezone: string): { date: string; hour: number; weekday: number } {
+  const parts = zonedParts(instant, timezone)
   return {
     date: `${parts['year']}-${parts['month']}-${parts['day']}`,
     hour: Number(parts['hour']),

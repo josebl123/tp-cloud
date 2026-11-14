@@ -32,6 +32,7 @@ locals {
     "GET /api/v1/establishments/{establishmentId}/queues",
     "POST /api/v1/establishments/{establishmentId}/queues",
     "GET /api/v1/establishments/{establishmentId}/metrics",
+    "GET /api/v1/establishments/{establishmentId}/analytics",
     "GET /api/v1/queues/{queueId}",
     "PATCH /api/v1/queues/{queueId}",
     "DELETE /api/v1/queues/{queueId}",

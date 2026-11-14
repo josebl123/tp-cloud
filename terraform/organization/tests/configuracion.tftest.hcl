@@ -187,3 +187,30 @@ run "buffer_del_lake_demasiado_corto" {
 
   expect_failures = [var.lake_buffer_seconds]
 }
+
+run "el_historial_de_demo_se_carga_una_vez_por_dia" {
+  command = plan
+
+  assert {
+    condition     = jsondecode(aws_lambda_invocation.seed_history[0].input).history.days == 90
+    error_message = "Con los datos de demo se cargan 90 días de historial."
+  }
+
+  assert {
+    condition     = join(",", keys(aws_lambda_invocation.seed_history[0].triggers)) == "dia"
+    error_message = "El historial no se recarga con cada cambio del código: solo una vez por día."
+  }
+}
+
+run "sin_historial" {
+  command = plan
+
+  variables {
+    demo_history_days = 0
+  }
+
+  assert {
+    condition     = length(aws_lambda_invocation.seed_history) == 0
+    error_message = "Con 0 días no se invoca la carga del historial."
+  }
+}

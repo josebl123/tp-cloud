@@ -8,6 +8,8 @@ import type {
   JoinPayload,
   MemberView,
   MembershipRole,
+  AnalyticsDashboard,
+  AnalyticsRange,
   MetricsRange,
   MetricsView,
   NotificationView,
@@ -162,6 +164,8 @@ export const api = {
       request<QueueView>(`/establishments/${id}/queues`, { method: 'POST', body }),
     metrics: (id: string, range: MetricsRange) =>
       request<MetricsView>(`/establishments/${id}/metrics?range=${range}`),
+    analytics: (id: string, range: AnalyticsRange) =>
+      request<AnalyticsDashboard>(`/establishments/${id}/analytics?range=${range}`),
   },
 
   queues: {

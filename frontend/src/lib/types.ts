@@ -254,3 +254,54 @@ export interface JoinPayload {
   /** BCP 47 tag. Stored server-side so later notifications keep the customer's language. */
   locale?: string
 }
+
+/** The historical dashboard, computed from the data lake. Missing averages had nothing to average. */
+export type AnalyticsRange = 'LAST_30_DAYS' | 'LAST_90_DAYS'
+
+export interface AnalyticsSummary {
+  visits: number
+  served: number
+  left: number
+  noShows: number
+  averageWaitMinutes?: number
+  p90WaitMinutes?: number
+  averageServiceMinutes?: number
+  averagePartySize?: number
+  estimateErrorMinutes?: number
+  estimateHitRate?: number
+  abandonmentRate: number
+  noShowRate: number
+}
+
+export interface AnalyticsDay {
+  date: string
+  visits: number
+  served: number
+  averageWaitMinutes?: number
+}
+
+export interface AnalyticsHeatCell {
+  /** 1 = Monday … 7 = Sunday. */
+  weekday: number
+  hour: number
+  visits: number
+}
+
+export interface AnalyticsQueue extends AnalyticsSummary {
+  queueId: string
+  name: string
+}
+
+export interface AnalyticsDashboard {
+  establishmentId: string
+  establishmentName: string
+  timezone: string
+  range: AnalyticsRange
+  from: string
+  to: string
+  summary: AnalyticsSummary
+  daily: AnalyticsDay[]
+  heatmap: AnalyticsHeatCell[]
+  queues: AnalyticsQueue[]
+  dataUntil?: string
+}

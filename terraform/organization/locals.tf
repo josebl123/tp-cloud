@@ -161,12 +161,14 @@ locals {
       }
     }
     # Carga los datos de demo. La invoca Terraform (seed.tf), no API Gateway.
+    # También carga el historial de demo en el data lake, por Firehose.
     seed = {
-      description = "Datos de demo: un local con dos colas y sus carriles."
-      memory_size = 256
-      timeout     = 30
+      description = "Datos de demo: un local con dos colas y sus carriles, y meses de visitas en el data lake."
+      memory_size = 512
+      timeout     = 120
       environment = {
-        TABLE_NAME = module.main_table.dynamodb_table_id
+        TABLE_NAME           = module.main_table.dynamodb_table_id
+        DELIVERY_STREAM_NAME = aws_kinesis_firehose_delivery_stream.visits.name
       }
     }
   }

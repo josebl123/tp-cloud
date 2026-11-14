@@ -7,6 +7,8 @@
 // su próximo pedido, no en su próximo login.
 
 import { randomUUID } from 'node:crypto'
+import type { AnalyticsDashboard, AnalyticsSource } from '../analytics/dashboard.js'
+import { analyticsWindow, parseAnalyticsRange } from '../analytics/dashboard.js'
 import { call, callNext, transition } from '../domain/entries.js'
 import { notFound } from '../domain/errors.js'
 import { computeMetrics, DEFAULT_TIMEZONE, windowFor } from '../domain/metrics.js'
@@ -43,6 +45,8 @@ export interface StaffDependencies {
   queues: QueueStore
   directory: DirectoryStore
   users: UserDirectory
+  /** El motor analítico. Sin él, el tablero de análisis responde 503. */
+  analytics?: AnalyticsSource
   newId?: () => string
 }
 
@@ -239,6 +243,28 @@ export function staffRoutes(deps: StaffDependencies): Routes {
         }),
       )
       return ok(metricsView({ name: establishment.name }, range, window, computeMetrics(finished, active)))
+    },
+
+    // El tablero histórico, desde el data lake. El establecimiento es el del path, ya autorizado: es
+    // el único filtro que llega al motor, así nadie consulta las visitas de otro local.
+    'GET /api/v1/establishments/{establishmentId}/analytics': async (request) => {
+      const establishmentId = request.param('establishmentId')
+      await requireMember(request, establishmentId)
+      const range = parseAnalyticsRange(request.query('range'))
+      const establishment = await requireEstablishment(establishmentId)
+      if (!deps.analytics) throw new HttpError(503, 'ANALYTICS_UNAVAILABLE', 'The analytics engine is not configured')
+      const timezone = establishment.timezone || DEFAULT_TIMEZONE
+      const window = analyticsWindow(range, timezone, request.now)
+      const figures = await deps.analytics.figures({ establishmentId, ...window })
+      const dashboard: AnalyticsDashboard = {
+        establishmentId,
+        establishmentName: establishment.name,
+        timezone,
+        range,
+        ...window,
+        ...figures,
+      }
+      return ok(dashboard)
     },
 
     // ----------------------------------------------------------------------------- colas
