@@ -39,6 +39,11 @@ export const en = {
   'landing.noShowDetail':
     'A grace period you set, and a policy that decides what happens when it runs out.',
   'landing.footer': 'ITBA 82.08 Cloud Computing · Grupo 9',
+  'landing.reassurance': 'No downloads. No standing around.',
+  'landing.previewTitle': 'Your place is saved.',
+  'landing.previewTag': 'Example ticket',
+  'landing.previewCaption': 'A little more time to do your own thing.',
+  'landing.signoff': 'Good things take their turn.',
 
   // Auth
   'auth.signInSubtitle': 'Manage your queues and see who is waiting.',
@@ -163,6 +168,9 @@ export const en = {
   'panel.signingIn': 'Signing you in',
   'panel.redirecting': 'Redirecting',
   'panel.establishment': 'Establishment',
+  'panel.navigation': 'Workspace navigation',
+  'panel.workspace': 'Your workspace',
+  'panel.overview': 'My queues',
 
   // Panel home
   'panel.today': 'Today',

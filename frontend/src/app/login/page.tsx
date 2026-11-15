@@ -60,7 +60,7 @@ export default function LoginPage() {
 
   return (
     <AuthShell>
-      <h1 className="font-display text-3xl font-semibold tracking-tight">{t('common.signIn')}</h1>
+      <h1 className="font-display text-4xl tracking-[-0.04em]">{t('common.signIn')}</h1>
       <p className="mt-2 text-muted">{t('auth.signInSubtitle')}</p>
 
       <form onSubmit={submit} className="mt-8 space-y-4">

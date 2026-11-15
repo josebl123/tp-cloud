@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next'
-import { Fraunces, Inter } from 'next/font/google'
+import { Inter } from 'next/font/google'
 import { AuthProvider } from '@/lib/auth'
 import { I18nProvider } from '@/lib/i18n'
 import './globals.css'
@@ -7,12 +7,6 @@ import './globals.css'
 const inter = Inter({
   subsets: ['latin'],
   variable: '--font-inter',
-  display: 'swap',
-})
-
-const fraunces = Fraunces({
-  subsets: ['latin'],
-  variable: '--font-fraunces',
   display: 'swap',
 })
 
@@ -24,8 +18,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#fdfbf7' },
-    { media: '(prefers-color-scheme: dark)', color: '#17120f' },
+    { media: '(prefers-color-scheme: light)', color: '#faf9f5' },
+    { media: '(prefers-color-scheme: dark)', color: '#20201d' },
   ],
   width: 'device-width',
   initialScale: 1,
@@ -57,7 +51,7 @@ const CONTENT_SECURITY_POLICY = [
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${inter.variable} ${fraunces.variable}`}>
+    <html lang="en" className={inter.variable}>
       {process.env.NODE_ENV === 'production' ? (
         <head>
           <meta httpEquiv="Content-Security-Policy" content={CONTENT_SECURITY_POLICY} />

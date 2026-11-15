@@ -5,57 +5,41 @@ import type { ReactNode } from 'react'
 import { useI18n } from '@/lib/i18n'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { Logo } from '@/components/Logo'
+import { QueueIllustration } from '@/components/QueueIllustration'
 
-/**
- * The frame around signing in and signing up.
- *
- * <p>Both pages were a 24rem column centred in the viewport - the phone layout, unchanged, on a
- * monitor. It left most of the screen empty while the form itself ran past the fold: four fields
- * plus a header and a footer link do not fit in a 768px-tall laptop viewport once they are stacked
- * in a single narrow strip.
- *
- * <p>From `lg` the width earns its keep. The brand panel takes the logo and the language switcher
- * out of the form column, which is worth about 64px of the overflow on its own, and the copy in it
- * is the landing page's - the same promise, not a second version of it to keep in sync.
- *
- * <p>The form column stays narrow at every width. A wide login form is not an improvement; the
- * problem was never that 24rem is too little for the form, it was that 24rem was all the page used.
- */
 export function AuthShell({ children }: { children: ReactNode }) {
   const { t } = useI18n()
 
   return (
-    <main className="lg:grid lg:min-h-dvh lg:grid-cols-[1.05fr_1fr]">
-      <aside className="hidden lg:flex lg:flex-col lg:justify-between lg:border-r lg:border-line lg:bg-raised lg:px-12 lg:py-10">
-        <Link href="/" className="w-fit">
-          <Logo />
-        </Link>
+    <main className="lg:grid lg:min-h-dvh lg:grid-cols-[1fr_1fr]">
+      <aside className="hidden lg:flex lg:flex-col lg:justify-between lg:border-r lg:border-line lg:bg-raised/60 lg:px-12 lg:py-9 xl:px-20">
+        <Link href="/" className="w-fit"><Logo /></Link>
 
-        <div>
-          <p className="text-sm font-medium text-brand">{t('landing.eyebrow')}</p>
-          <h2 className="mt-3 font-display text-4xl font-semibold tracking-tight">
+        <div className="stagger-in mx-auto w-full max-w-md py-10">
+          <p className="text-xs font-medium tracking-[0.12em] text-muted uppercase">{t('landing.eyebrow')}</p>
+          <h2 className="mt-5 font-display text-[clamp(2.75rem,4.5vw,4.5rem)] leading-[1.06] tracking-[-0.05em]">
             {t('landing.headlineTop')}
             <br />
-            {t('landing.headlineBottom')}
+            <span className="text-brand italic">{t('landing.headlineBottom')}</span>
           </h2>
-          <p className="mt-5 max-w-sm text-muted">{t('landing.lede')}</p>
+          <p className="mt-5 max-w-sm text-sm leading-relaxed text-muted">{t('landing.lede')}</p>
+          <QueueIllustration className="mt-8 w-full" />
         </div>
 
-        <div className="flex justify-start">
+        <div className="flex items-center justify-between gap-4">
+          <p className="font-display text-sm text-muted italic">{t('landing.signoff')}</p>
           <LanguageSwitcher />
         </div>
       </aside>
 
-      <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col justify-center px-5 py-12 lg:min-h-0 lg:py-10">
-        {/* On lg these two live in the panel beside this column, so they would be a second copy. */}
-        <div className="mb-8 flex items-center justify-between lg:hidden">
-          <Link href="/">
-            <Logo />
-          </Link>
+      <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center px-6 py-10 sm:px-10 lg:min-h-0">
+        <div className="mb-10 flex items-center justify-between lg:hidden">
+          <Link href="/"><Logo /></Link>
           <LanguageSwitcher />
         </div>
-
-        {children}
+        <div className="animate-in">
+          {children}
+        </div>
       </div>
     </main>
   )
