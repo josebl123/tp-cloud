@@ -12,8 +12,8 @@ import { useI18n } from '@/lib/i18n'
  * border change stays for the pointer; the ring comes back for the keyboard.
  */
 const CONTROL =
-  'w-full rounded-xl border border-line-strong bg-surface px-3.5 py-2.5 text-ink ' +
-  'placeholder:text-faint transition-colors focus:border-brand ' +
+  'w-full rounded-xl border border-line-strong bg-bg/50 px-3.5 py-3 text-ink ' +
+  'placeholder:text-faint transition-[border-color,background-color,box-shadow] duration-200 focus:border-brand focus:bg-surface focus:shadow-soft ' +
   'disabled:opacity-50'
 
 interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {

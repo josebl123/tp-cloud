@@ -63,7 +63,7 @@ export default function RegisterPage() {
 
   return (
     <AuthShell>
-      <h1 className="font-display text-3xl font-semibold tracking-tight">{t('auth.registerTitle')}</h1>
+      <h1 className="font-display text-4xl tracking-[-0.04em]">{t('auth.registerTitle')}</h1>
       <p className="mt-2 text-muted">{t('auth.registerSubtitle')}</p>
 
       <form onSubmit={submit} className="mt-8 space-y-4">

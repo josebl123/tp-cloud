@@ -38,6 +38,11 @@ export const es: Record<MessageKey, string> = {
   'landing.noShowDetail':
     'Un período de gracia que definís vos, y una política que decide qué pasa cuando se acaba.',
   'landing.footer': 'ITBA 82.08 Cloud Computing · Grupo 9',
+  'landing.reassurance': 'Sin descargas. Sin esperar de pie.',
+  'landing.previewTitle': 'Tu lugar está guardado.',
+  'landing.previewTag': 'Turno de ejemplo',
+  'landing.previewCaption': 'Un poco más de tiempo para hacer la tuya.',
+  'landing.signoff': 'Cada cosa, a su tiempo.',
 
   // Cuenta
   'auth.signInSubtitle': 'Gestioná tus filas y mirá quién está esperando.',
@@ -162,6 +167,9 @@ export const es: Record<MessageKey, string> = {
   'panel.signingIn': 'Iniciando sesión',
   'panel.redirecting': 'Redirigiendo',
   'panel.establishment': 'Establecimiento',
+  'panel.navigation': 'Navegación del espacio de trabajo',
+  'panel.workspace': 'Tu espacio de trabajo',
+  'panel.overview': 'Mis filas',
 
   'panel.today': 'Hoy',
   'panel.loadingEstablishment': 'Cargando tu establecimiento',

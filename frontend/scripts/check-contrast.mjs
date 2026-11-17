@@ -21,8 +21,9 @@ const AA = 4.5
 const GROUNDS = ['bg', 'surface', 'raised']
 const ON_EVERY_GROUND = ['ink', 'muted', 'faint', 'brand', 'sage', 'warn', 'danger']
 const PAIRS = [
-  ['on-brand', 'brand'],        // primary button label
-  ['on-brand', 'brand-hover'],  // ...and its hover state
+  ['bg', 'ink'],               // primary button label
+  ['on-brand', 'brand'],        // selected range
+  ['on-brand', 'brand-hover'],
   ['brand', 'brand-soft'],      // Badge kind="brand"
   ['sage', 'sage-soft'],        // Badge/Alert success
   ['warn', 'warn-soft'],        // Badge/Alert warn

@@ -1,100 +1,60 @@
 @import "tailwindcss";
 
-/*
- * Q design system - "warm hospitality".
- *
- * The customer holds this on a phone, often outdoors, often for one glance: how many are ahead of
- * me, and how long. So the palette is warm and low-glare rather than clinical, and the one number
- * that matters is set enormous in the display face while everything else recedes.
- *
- * Every colour is a semantic token, never a raw hex in a component. Dark mode re-points the same
- * tokens, so a component written once is correct in both themes.
- */
+/* Paper, ink and clay. Shared semantic tokens serve every screen and both themes. */
 @theme {
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
-
-  /* Surfaces and text */
-  --color-bg: #fdfbf7;
+  --font-display: Georgia, Cambria, "Times New Roman", serif;
+  --color-bg: #faf9f5;
   --color-surface: #ffffff;
-  --color-raised: #f7f1e8;
-  /*
-   * Every foreground below clears WCAG AA (4.5:1) against all three light grounds it can land on:
-   * bg, surface and raised. `faint` used to be #a2958c, which measured 2.59:1 on raised - it read
-   * as "quiet" to a designer on a good screen and as "missing" to everyone else, and it carries
-   * hints, timestamps and helper text. Fixing it meant darkening `muted` too, or the two tiers
-   * would have collapsed into each other.
-   */
-  --color-ink: #2b211c;
-  --color-muted: #655a53;
-  --color-faint: #766d66;
-  --color-line: #ebe1d6;
-  --color-line-strong: #ddcfc0;
-
-  /*
-   * Terracotta carries every primary action and the customer's own position.
-   *
-   * Contrast is a function of luminance, not saturation, so chroma is nearly free: this is the same
-   * hue at full saturation and the same measured ratios as the muted #a45432 it replaces - 4.80 as
-   * text on `raised`, 5.20 under the button label. It reads as the warm terracotta the product is
-   * meant to have instead of a brown, and gives up nothing to get there. `brand-soft` moved with it
-   * for the same reason: at 14% saturation it is a more definite tint than the old 11%, and holds
-   * badge text at 4.60 rather than 4.52.
-   */
-  --color-brand: #c23a00;
-  --color-brand-hover: #ab3300;
-  --color-brand-soft: #ffe9db;
+  --color-raised: #f0eee7;
+  --color-ink: #292824;
+  --color-muted: #62615a;
+  --color-faint: #6c6b62;
+  --color-line: #e5e2d9;
+  --color-line-strong: #d2cec2;
+  --color-brand: #a64b32;
+  --color-brand-hover: #8e3d28;
+  --color-brand-soft: #f7e9e2;
   --color-on-brand: #fffaf6;
-
-  /* Sage means "settled": served, open, healthy. */
-  --color-sage: #5a7053;
-  --color-sage-soft: #e6ece1;
-
-  --color-warn: #906411;
-  --color-warn-soft: #fbeed5;
-  --color-danger: #a83f34;
-  --color-danger-soft: #f9e2de;
-
-  --radius-lg: 1rem;
-  --radius-xl: 1.375rem;
-
-  --shadow-soft: 0 1px 2px rgb(43 33 28 / 0.04), 0 8px 24px -12px rgb(43 33 28 / 0.12);
-  --shadow-lift: 0 2px 4px rgb(43 33 28 / 0.05), 0 18px 40px -18px rgb(43 33 28 / 0.22);
+  /* Decorative clay is lighter; text uses the AA-tested brand token. */
+  --color-clay: #cc785c;
+  --color-sage: #56654b;
+  --color-sage-soft: #e8ece3;
+  --color-warn: #8b631b;
+  --color-warn-soft: #f8efd9;
+  --color-danger: #a33f35;
+  --color-danger-soft: #fae8e3;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --shadow-soft: 0 1px 3px rgb(41 40 36 / 0.035), 0 4px 16px -8px rgb(41 40 36 / 0.06);
+  --shadow-lift: 0 2px 4px rgb(41 40 36 / 0.04), 0 16px 40px -16px rgb(41 40 36 / 0.16);
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Same tokens, re-pointed. Warm dark, not blue-black: it should still feel like the same product. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-bg: #14100d;
-    --color-surface: #241c17;
-    --color-raised: #302620;
-    --color-ink: #f4ece3;
-    --color-muted: #ac9c90;
-    /*
-     * The light palette was corrected for contrast; this one had the identical defect left in it.
-     * `faint` was #8a7a6e, which measured 4.06 on `surface` and 3.57 on `raised` - the same token
-     * carrying the same hints and timestamps, failing on two of the three grounds it lands on.
-     */
-    --color-faint: #a18e80;
-    --color-line: #3a2e26;
-    --color-line-strong: #4f3f35;
-
-    /* Saturated to match the light theme, at luminance parity: the ratios are unchanged. */
-    --color-brand: #f57338;
-    --color-brand-hover: #ff8954;
-    --color-brand-soft: #3a2419;
-    --color-on-brand: #1a1009;
-
-    --color-sage: #9bb08f;
-    --color-sage-soft: #242c20;
-
-    --color-warn: #d9a441;
-    --color-warn-soft: #33260f;
-    --color-danger: #e08076;
-    --color-danger-soft: #38201c;
-
-    --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px -12px rgb(0 0 0 / 0.6);
-    --shadow-lift: 0 2px 4px rgb(0 0 0 / 0.4), 0 18px 40px -18px rgb(0 0 0 / 0.7);
+    color-scheme: dark;
+    --color-bg: #20201d;
+    --color-surface: #292925;
+    --color-raised: #30302b;
+    --color-ink: #f4f1e9;
+    --color-muted: #bdb8ac;
+    --color-faint: #aaa598;
+    --color-line: #3d3d35;
+    --color-line-strong: #555449;
+    --color-brand: #e5a083;
+    --color-brand-hover: #f0b49a;
+    --color-brand-soft: #3b2c25;
+    --color-on-brand: #211a16;
+    --color-clay: #da9477;
+    --color-sage: #a5b59b;
+    --color-sage-soft: #2d3428;
+    --color-warn: #dfb25d;
+    --color-warn-soft: #3b301b;
+    --color-danger: #e89a90;
+    --color-danger-soft: #3d2925;
+    --shadow-soft: 0 1px 3px rgb(0 0 0 / 0.12);
+    --shadow-lift: 0 16px 40px -16px rgb(0 0 0 / 0.4);
   }
 }
 
@@ -102,14 +62,9 @@
   html {
     -webkit-text-size-adjust: 100%;
     scrollbar-gutter: stable;
-    /*
-     * The staff header is `sticky top-0` and 64px tall. Without this, tabbing to a control just
-     * above the fold scrolls it to the very top of the viewport - directly underneath that header,
-     * where it is completely hidden. WCAG 2.2 SC 2.4.11, Focus Not Obscured.
-     */
-    scroll-padding-top: 5rem;
+    /* Keep keyboard focus visible below the staff header. */
+    scroll-padding-top: 8.5rem;
   }
-
   body {
     background-color: var(--color-bg);
     color: var(--color-ink);
@@ -117,80 +72,111 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
   }
-
-  /* The whole product is about numbers changing; keep columns from jittering. */
-  .tnum {
-    font-variant-numeric: tabular-nums;
-    font-feature-settings: "tnum" 1;
-  }
-
+  button:not(:disabled), select:not(:disabled) { cursor: pointer; }
   :focus-visible {
     outline: 2px solid var(--color-brand);
-    outline-offset: 2px;
+    outline-offset: 3px;
     border-radius: 4px;
   }
+  ::selection { background: var(--color-brand-soft); color: var(--color-ink); }
+  @media (min-width: 64rem) {
+    html { scroll-padding-top: 5rem; }
+  }
+}
 
-  ::selection {
-    background: var(--color-brand-soft);
-    color: var(--color-ink);
+@layer components {
+  .logo-mark {
+    flex-shrink: 0;
+    color: var(--color-clay);
+    transition: transform 600ms var(--ease-settle);
+  }
+  a:hover .logo-mark { transform: rotate(-12deg); }
+  .logo-stroke {
+    stroke-dasharray: 160;
+    stroke-dashoffset: 0;
+    animation: ink-draw 1.2s var(--ease-settle) both;
+  }
+  .page-enter, .animate-in { animation: fade-rise 550ms var(--ease-settle) both; }
+  .stagger-in > * { animation: fade-rise 700ms var(--ease-settle) both; }
+  .stagger-in > :nth-child(2) { animation-delay: 80ms; }
+  .stagger-in > :nth-child(3) { animation-delay: 160ms; }
+  .stagger-in > :nth-child(4) { animation-delay: 240ms; }
+  .stagger-in > :nth-child(5) { animation-delay: 320ms; }
+  .queue-illustration { animation: illustration-in 1s var(--ease-settle) 120ms both; }
+  .queue-path {
+    stroke-dasharray: 700;
+    animation: path-draw 1.8s var(--ease-settle) 250ms both;
+  }
+  .queue-person {
+    transform-box: fill-box;
+    transform-origin: center bottom;
+    animation: illustration-in 900ms var(--ease-settle) both;
+  }
+  .queue-person:nth-of-type(2) { animation-delay: 200ms; }
+  .queue-person:nth-of-type(3) { animation-delay: 350ms; }
+  .queue-person:nth-of-type(4) { animation-delay: 500ms; }
+  .loading-mark { animation: breathe 2.4s ease-in-out infinite; }
+  .pulse-live { animation: pulse-live 2.4s ease-in-out infinite; }
+  .interactive-card {
+    transition: border-color 220ms, box-shadow 300ms, transform 350ms var(--ease-settle);
+  }
+  @media (hover: hover) {
+    .interactive-card:hover {
+      border-color: var(--color-line-strong);
+      box-shadow: var(--shadow-lift);
+      transform: translateY(-3px);
+    }
   }
 }
 
 @layer utilities {
-  /* The position readout. Optical sizing is why Fraunces is here rather than a second sans. */
+  .tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
   .display-number {
     font-family: var(--font-display);
-    font-weight: 600;
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
-    line-height: 0.85;
-    letter-spacing: -0.03em;
-  }
-
-  .animate-in {
-    animation: fade-rise 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
-  }
-
-  .pulse-live {
-    animation: pulse-live 2s ease-in-out infinite;
-  }
-
-  @keyframes fade-rise {
-    from {
-      opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-
-  @keyframes pulse-live {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.35;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .animate-in,
-    .pulse-live {
-      animation: none;
-    }
+    line-height: 0.9;
+    letter-spacing: -0.05em;
   }
 }
 
-/* The QR sheet is meant to be printed and taped to a counter. */
-@media print {
-  .no-print {
-    display: none !important;
-  }
+@keyframes fade-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ink-draw {
+  from { stroke-dashoffset: 160; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes path-draw {
+  from { stroke-dashoffset: 700; opacity: 0; }
+  to { stroke-dashoffset: 0; opacity: 1; }
+}
+@keyframes illustration-in {
+  from { opacity: 0; transform: translateY(8px) rotate(-2deg); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes breathe {
+  0%, 100% { transform: rotate(-8deg) scale(0.94); opacity: 0.6; }
+  50% { transform: rotate(8deg) scale(1.04); opacity: 1; }
+}
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
 
-  body {
-    background: #fff;
-    color: #000;
+/* Cover page transitions, decoration and existing busy indicators alike. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
   }
+  a:hover .logo-mark, .interactive-card:hover { transform: none; }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; color: #000; }
+  .page-enter, .animate-in, .stagger-in > * { animation: none; }
 }

@@ -189,7 +189,7 @@ function QueueCard({ queue, board }: { queue: QueueView; board: QueueSnapshot | 
   const { t } = useI18n()
 
   return (
-    <Card className="flex min-w-0 flex-col">
+    <Card className="interactive-card flex min-w-0 flex-col">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="truncate font-display text-lg font-semibold tracking-tight">{queue.name}</h3>

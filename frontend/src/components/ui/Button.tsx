@@ -8,7 +8,7 @@ type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
 type Size = 'sm' | 'md' | 'lg'
 
 const VARIANTS: Record<Variant, string> = {
-  primary: 'bg-brand text-on-brand hover:bg-brand-hover shadow-soft',
+  primary: 'bg-ink text-bg hover:bg-ink/85 shadow-soft',
   secondary: 'bg-surface text-ink border border-line-strong hover:bg-raised',
   ghost: 'text-muted hover:text-ink hover:bg-raised',
   danger: 'bg-danger-soft text-danger border border-danger/25 hover:bg-danger hover:text-white',
@@ -39,7 +39,7 @@ interface Look {
 export function buttonClass({ variant = 'primary', size = 'md', block = false }: Look = {}): string {
   return cx(
     'inline-flex items-center justify-center rounded-xl font-medium',
-    'transition-[background-color,color,transform,box-shadow] duration-150',
+    'transition-[background-color,color,transform,box-shadow] duration-200 ease-out',
     'active:scale-[0.98] disabled:pointer-events-none disabled:opacity-45',
     'aria-disabled:opacity-45 aria-busy:cursor-progress',
     VARIANTS[variant],
