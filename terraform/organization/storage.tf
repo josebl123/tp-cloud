@@ -1,5 +1,5 @@
-# Los tres buckets privados que pidió la corrección del TP2: el sitio, los artefactos y los
-# registros de acceso de los otros dos. Los tres salen del mismo módulo.
+# Los buckets privados: el sitio, los artefactos, el data lake, los resultados de Athena y los
+# registros de acceso de todos los demás. Todos salen del mismo módulo.
 #
 # El módulo configura cada bucket pero no lo crea: el SCP del Learner Lab niega una lectura que el
 # provider hace después de crear cualquier `aws_s3_bucket`. Los crea el pipeline justo antes del apply
@@ -20,6 +20,7 @@ module "private_buckets" {
 
   name               = local.logged_bucket_names[each.key]
   versioning_enabled = each.value.versioning_enabled
+  expiration_days    = each.value.expiration_days
   access_logs_prefix = "${each.key}/"
 
   # El output `name` del bucket de logs recién se entrega con su política puesta (la que deja a S3

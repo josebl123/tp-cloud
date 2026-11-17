@@ -1,8 +1,13 @@
-# La analítica: un ETL en streaming de la operación (OLTP) a una tabla de hechos en un data lake.
+# La analítica: un ETL en streaming de la operación (OLTP) a una tabla de hechos en un data lake, y
+# un motor (Athena) que la resume para el tablero del panel.
 #
 #   SNS q-queue-events ─▶ SQS q-analytics ─▶ λ archiver ─▶ Firehose q-visitas ─▶ S3 lake (Parquet, por día)
-#                                                                  │
-#                                       Glue Data Catalog ◀────────┘ (el esquema con que convierte)
+#                                                                  │                    │
+#                                       Glue Data Catalog ◀────────┘                    │
+#                                              │                                         │
+#   EventBridge (cada N min) ─▶ λ analytics-refresher ─▶ Athena ◀─────────────────────────┘
+#                                              │
+#                                              └─▶ DynamoDB q-main (agregados por día) ─▶ λ staff ─▶ panel
 #
 # DynamoDB está modelada para la operación: leer y cambiar una cola por su clave, en milisegundos.
 # Las preguntas del negocio ("¿a qué hora se llena?", "¿cuánto le erramos a la espera?") son lo
@@ -15,12 +20,17 @@
 #     solo las columnas que usa) y las escribe particionadas por día local, así una consulta de "la
 #     última semana" lee siete carpetas y no el lake entero;
 #   - catálogo: la tabla de Glue es el esquema de esos archivos. Firehose lo usa para convertir, y
-#     cualquier motor que entienda el catálogo puede consultarlos sin moverlos.
+#     Athena para consultarlos sin moverlos de S3 (schema-on-read).
 #
-# El esquema se define una vez acá (schema-on-read): los archivos son Parquet común en S3, y el motor
-# que los consulte lee la estructura del catálogo.
+# Athena calcula, pero no atiende al panel: responde en segundos y cobra por dato escaneado. Cada
+# pocos minutos el refresher le pide un resumen por local, día y cola y lo guarda en DynamoDB; el
+# tablero lee de ahí (functions/src/analytics/aggregates.ts). Para preguntas que el tablero no
+# contesta, la tabla se consulta directamente con SQL desde la consola de Athena, con el mismo workgroup.
 
 locals {
+  # El rango más largo del tablero: el refresher recalcula estos días en cada vuelta.
+  analytics_window_days = 90
+
   analytics_database = replace(format("%s_analitica", var.project), "-", "_")
   visits_table       = "visitas"
   visits_location    = format("s3://%s/%s/", local.bucket_names.lake, local.visits_table)
@@ -195,4 +205,59 @@ resource "aws_kinesis_firehose_delivery_stream" "visits" {
       log_stream_name = aws_cloudwatch_log_stream.visits_delivery.name
     }
   }
+}
+
+# Athena: las consultas sobre el lake, del refresher y de cualquiera que use la consola.
+resource "aws_athena_workgroup" "analytics" {
+  name        = format("%s-analitica", var.project)
+  description = "Consultas sobre el data lake de Queue."
+  # Al destruir se borra aunque tenga consultas guardadas o en el historial.
+  force_destroy = true
+
+  configuration {
+    # Lo que se fija acá vale para toda consulta del workgroup, aunque el cliente pida otra cosa.
+    enforce_workgroup_configuration    = true
+    publish_cloudwatch_metrics_enabled = true
+    # Una consulta que escanearía más que esto se cancela: un error no puede salir caro.
+    bytes_scanned_cutoff_per_query = var.athena_scan_limit_mb * 1024 * 1024
+
+    engine_version {
+      selected_engine_version = "Athena engine version 3"
+    }
+
+    result_configuration {
+      output_location = format("s3://%s/resultados/", module.private_buckets["athena"].name)
+
+      encryption_configuration {
+        encryption_option = "SSE_S3"
+      }
+    }
+  }
+}
+
+# El refresher cada N minutos. EventBridge invoca la función directamente: el permiso de abajo es lo
+# único que necesita.
+resource "aws_cloudwatch_event_rule" "analytics_refresh" {
+  name                = format("%s-analytics-refresh", var.project)
+  description         = "Recalcula los agregados del tablero de análisis."
+  schedule_expression = var.analytics_refresh_minutes == 1 ? "rate(1 minute)" : format("rate(%d minutes)", var.analytics_refresh_minutes)
+}
+
+resource "aws_cloudwatch_event_target" "analytics_refresh" {
+  rule = aws_cloudwatch_event_rule.analytics_refresh.name
+  arn  = module.workers["analytics-refresher"].arn
+
+  # Si una invocación falla, la próxima vuelta recalcula todo igual: no hace falta reintentar mucho.
+  retry_policy {
+    maximum_retry_attempts       = 2
+    maximum_event_age_in_seconds = 300
+  }
+}
+
+resource "aws_lambda_permission" "analytics_refresh" {
+  statement_id  = "EventBridgeRecalculaAgregados"
+  action        = "lambda:InvokeFunction"
+  function_name = module.workers["analytics-refresher"].name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.analytics_refresh.arn
 }

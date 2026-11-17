@@ -278,3 +278,25 @@ variable "demo_history_days" {
     error_message = "De 0 a 365 días, enteros."
   }
 }
+
+variable "analytics_refresh_minutes" {
+  description = "Cada cuántos minutos se recalculan con Athena los agregados del tablero de análisis. Menos minutos, datos más frescos y más consultas."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = floor(var.analytics_refresh_minutes) == var.analytics_refresh_minutes && var.analytics_refresh_minutes >= 1 && var.analytics_refresh_minutes <= 1440
+    error_message = "De 1 a 1440 minutos, enteros."
+  }
+}
+
+variable "athena_scan_limit_mb" {
+  description = "Lo más que puede escanear una consulta del workgroup de Athena, en MB. Una consulta que lo pasaría se cancela."
+  type        = number
+  default     = 1024
+
+  validation {
+    condition     = floor(var.athena_scan_limit_mb) == var.athena_scan_limit_mb && var.athena_scan_limit_mb >= 10
+    error_message = "Athena exige al menos 10 MB, enteros."
+  }
+}

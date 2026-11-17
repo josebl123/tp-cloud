@@ -54,3 +54,7 @@ export const RATE_SK = 'RATE'
 
 /** Segundos desde epoch, el formato que exige el TTL de DynamoDB. */
 export const epochSeconds = (date: Date) => Math.floor(date.getTime() / 1000)
+
+/** Los agregados diarios de un local para el tablero de análisis, uno por día local (AAAA-MM-DD). */
+export const analyticsPk = (establishmentId: string) => `ANALYTICS#${establishmentId}`
+export const analyticsDaySk = (date: string) => `DAY#${date}`

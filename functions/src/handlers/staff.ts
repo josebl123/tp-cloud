@@ -24,6 +24,7 @@ import * as items from '../persistence/items.js'
 import { createTableConfig } from '../persistence/client.js'
 import { DirectoryStore } from '../persistence/directory-store.js'
 import { QueueStore } from '../persistence/queue-store.js'
+import { AnalyticsStore } from '../persistence/analytics-store.js'
 import type { UserDirectory } from '../api/users.js'
 import { CognitoUsers } from '../api/users.js'
 import {
@@ -431,7 +432,12 @@ function defaultDependencies(): StaffDependencies {
   const table = createTableConfig()
   const userPoolId = process.env.USER_POOL_ID
   if (!userPoolId) throw new Error('USER_POOL_ID no está configurada')
-  return { queues: new QueueStore(table), directory: new DirectoryStore(table), users: new CognitoUsers(userPoolId) }
+  return {
+    queues: new QueueStore(table),
+    directory: new DirectoryStore(table),
+    users: new CognitoUsers(userPoolId),
+    analytics: new AnalyticsStore(table),
+  }
 }
 
 let cached: ReturnType<typeof router> | undefined

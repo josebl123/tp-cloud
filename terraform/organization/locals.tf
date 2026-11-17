@@ -28,14 +28,22 @@ locals {
     spa = {
       # El sitio se reconstruye desde git en cada despliegue: versionarlo no agrega nada.
       versioning_enabled = false
+      expiration_days    = null
     }
     artifacts = {
       # Las funciones apuntan a una versión exacta del zip, así que el versionado es obligatorio.
       versioning_enabled = true
+      expiration_days    = null
     }
     # El data lake (analytics.tf): Firehose solo agrega archivos nuevos, nunca reescribe uno.
     lake = {
       versioning_enabled = false
+      expiration_days    = null
+    }
+    # Los resultados de cada consulta de Athena. Ya quedaron en DynamoDB: son descartables.
+    athena = {
+      versioning_enabled = false
+      expiration_days    = 7
     }
   }
 
@@ -158,6 +166,19 @@ locals {
       environment = {
         TABLE_NAME           = module.main_table.dynamodb_table_id
         DELIVERY_STREAM_NAME = aws_kinesis_firehose_delivery_stream.visits.name
+      }
+    }
+    # Recalcula con Athena los agregados del tablero y los deja en q-main. La dispara EventBridge.
+    analytics-refresher = {
+      description = "Recalcula con Athena los agregados diarios del tablero de análisis y los guarda en DynamoDB."
+      memory_size = 256
+      timeout     = 120
+      environment = {
+        TABLE_NAME       = module.main_table.dynamodb_table_id
+        ATHENA_WORKGROUP = aws_athena_workgroup.analytics.name
+        GLUE_DATABASE    = aws_glue_catalog_database.analytics.name
+        GLUE_TABLE       = aws_glue_catalog_table.visits.name
+        WINDOW_DAYS      = tostring(local.analytics_window_days)
       }
     }
     # Carga los datos de demo. La invoca Terraform (seed.tf), no API Gateway.

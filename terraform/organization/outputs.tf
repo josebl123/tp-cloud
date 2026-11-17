@@ -40,7 +40,7 @@ output "user_pool_client_id" {
 }
 
 output "bucket_names" {
-  description = "Los tres buckets privados, por función."
+  description = "Los buckets privados, por función."
   # Directo de los locals, no de los módulos, para que se conozca en el plan: el pipeline lo lee del
   # plan guardado para crear los buckets antes del apply.
   value = local.bucket_names
@@ -85,11 +85,13 @@ output "waf_web_acl_name" {
 }
 
 output "analytics" {
-  description = "El data lake: la base y la tabla de hechos en el catálogo de Glue, y el delivery stream de Firehose que la carga."
+  description = "El data lake: la tabla de hechos en Glue, el Firehose que la carga, el workgroup de Athena y la función que recalcula el tablero."
   value = {
     database        = aws_glue_catalog_database.analytics.name
     table           = aws_glue_catalog_table.visits.name
     location        = local.visits_location
     delivery_stream = aws_kinesis_firehose_delivery_stream.visits.name
+    workgroup       = aws_athena_workgroup.analytics.name
+    refresher       = module.workers["analytics-refresher"].name
   }
 }

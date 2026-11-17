@@ -58,6 +58,7 @@ run "el_plan_se_arma_con_los_valores_por_defecto" {
       spa       = "q-spa-123456789012-us-east-1"
       artifacts = "q-artifacts-123456789012-us-east-1"
       lake      = "q-lake-123456789012-us-east-1"
+      athena    = "q-athena-123456789012-us-east-1"
       logs      = "q-logs-123456789012-us-east-1"
     }
     error_message = "Los nombres de los buckets salen de la cuenta y la región, y se conocen en el plan (el pipeline los lee del plan para crearlos)."
@@ -213,4 +214,46 @@ run "sin_historial" {
     condition     = length(aws_lambda_invocation.seed_history) == 0
     error_message = "Con 0 días no se invoca la carga del historial."
   }
+}
+
+run "athena_recalcula_el_tablero_con_un_tope_de_escaneo" {
+  command = plan
+
+  assert {
+    condition     = aws_cloudwatch_event_rule.analytics_refresh.schedule_expression == "rate(5 minutes)"
+    error_message = "Por defecto los agregados se recalculan cada 5 minutos."
+  }
+
+  assert {
+    condition     = aws_athena_workgroup.analytics.configuration[0].bytes_scanned_cutoff_per_query == 1073741824 && aws_athena_workgroup.analytics.configuration[0].enforce_workgroup_configuration
+    error_message = "El workgroup impone un tope de 1 GB por consulta, que el cliente no puede saltear."
+  }
+
+  assert {
+    condition     = module.workers["analytics-refresher"].name == "q-analytics-refresher"
+    error_message = "El refresher es una función más del grupo de workers."
+  }
+}
+
+run "recalculo_cada_un_minuto" {
+  command = plan
+
+  variables {
+    analytics_refresh_minutes = 1
+  }
+
+  assert {
+    condition     = aws_cloudwatch_event_rule.analytics_refresh.schedule_expression == "rate(1 minute)"
+    error_message = "EventBridge pide el singular para un minuto."
+  }
+}
+
+run "tope_de_athena_invalido" {
+  command = plan
+
+  variables {
+    athena_scan_limit_mb = 5
+  }
+
+  expect_failures = [var.athena_scan_limit_mb]
 }
